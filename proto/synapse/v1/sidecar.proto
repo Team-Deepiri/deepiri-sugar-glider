@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package synapse.v1;
+
+option go_package = "github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/proto/synapse/v1;synapsev1";
+
+service SynapseSidecar {
+  rpc Publish(PublishRequest) returns (PublishResponse);
+  rpc PublishBatch(PublishBatchRequest) returns (PublishBatchResponse);
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+  rpc Ack(AckRequest) returns (AckResponse);
+  rpc StreamInfo(StreamInfoRequest) returns (StreamInfoResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message PublishRequest {
+  string stream = 1;
+  string event_type = 2;
+  string sender = 3;
+  string recipient = 4;
+  string priority = 5;
+  bytes payload = 6;
+  int32 ttl_sec = 7;
+}
+
+message PublishResponse {
+  string entry_id = 1;
+}
+
+message PublishBatchRequest {
+  string stream = 1;
+  repeated PublishRequest events = 2;
+}
+
+message PublishBatchResponse {
+  repeated string entry_ids = 1;
+}
+
+message SubscribeRequest {
+  string stream = 1;
+  string consumer_group = 2;
+  string consumer_name = 3;
+  int32 batch_size = 4;
+}
+
+message Event {
+  string stream = 1;
+  string entry_id = 2;
+  string event_type = 3;
+  string sender = 4;
+  bytes payload = 5;
+  string timestamp = 6;
+}
+
+message AckRequest {
+  string stream = 1;
+  string consumer_group = 2;
+  repeated string entry_ids = 3;
+}
+
+message AckResponse {
+  int32 acked = 1;
+}
+
+message StreamInfoRequest {
+  string stream = 1;
+}
+
+message StreamInfoResponse {
+  int64 length = 1;
+  int32 groups = 2;
+  string first_entry_id = 3;
+  string last_entry_id = 4;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+  string redis_status = 2;
+}
