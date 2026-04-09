@@ -29,9 +29,9 @@ type options struct {
 func parseFlags() options {
 	now := time.Now().Unix()
 	opts := options{}
-	flag.StringVar(&opts.addr, "addr", "localhost:50051", "sidecar gRPC address")
+	flag.StringVar(&opts.addr, "addr", "localhost:50051", "sugar glider gRPC address")
 	flag.StringVar(&opts.stream, "stream", "platform-events", "stream to publish/read")
-	flag.StringVar(&opts.group, "group", "sidecar-grpc-smoke", "consumer group")
+	flag.StringVar(&opts.group, "group", "sugar-glider-grpc-smoke", "consumer group")
 	flag.StringVar(&opts.consumer, "consumer", fmt.Sprintf("grpc-smoke-%d", now), "consumer name")
 	flag.IntVar(&opts.attempts, "attempts", 12, "max subscribe attempts")
 	flag.IntVar(&opts.batchSize, "batch-size", 25, "subscribe batch size")
@@ -76,13 +76,13 @@ func main() {
 		exitf("health RPC failed: %v", err)
 	}
 	if !health.GetHealthy() {
-		exitf("sidecar reported unhealthy redis_status=%s", health.GetRedisStatus())
+		exitf("sugar glider reported unhealthy redis_status=%s", health.GetRedisStatus())
 	}
 
 	smokeID := fmt.Sprintf("grpc-smoke-%d", time.Now().UnixNano())
 	payload, err := json.Marshal(map[string]any{
 		"smoke_id":  smokeID,
-		"source":    "sidecar-grpc-smoke",
+		"source":    "sugar-glider-grpc-smoke",
 		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
@@ -93,7 +93,7 @@ func main() {
 	pubResp, err := client.Publish(pubCtx, &synapsev1.PublishRequest{
 		Stream:    opts.stream,
 		EventType: "smoke.test.grpc",
-		Sender:    "sidecar-grpc-smoke",
+		Sender:    "sugar-glider-grpc-smoke",
 		Priority:  "normal",
 		Payload:   payload,
 	})
