@@ -1,15 +1,16 @@
-# Synapse Sidecar (Go) in `real-time-gateway`
+# Synapse Sugar Glider (Go) in `real-time-gateway`
 
-This sidecar runs next to the realtime gateway service and owns Redis Streams transport concerns (publish, consume, ack, WAL replay, and DLQ scanning).
+This transport service (formerly Synapse Sidecar) runs next to the realtime gateway and owns Redis Streams concerns (publish, consume, ack, WAL replay, and DLQ scanning).
+Legacy module/path names remain `synapse-sidecar` for compatibility.
 
 ## Current capabilities
 
-- Env-driven sidecar config (`SIDECAR_*`)
+- Env-driven Sugar Glider config (`SIDECAR_*` legacy variable namespace)
 - Redis Streams publish/consume/ack support
-- gRPC server from `proto/synapse/v1/sidecar.proto`
+- gRPC server from `proto/synapse/v1/sidecar.proto` (legacy proto path)
 - HTTP compatibility endpoints (`/v1/publish`, `/v1/read`, `/v1/ack`) for incremental migration
 - `/healthz`, `/readyz`, and `/metrics` HTTP endpoints
-- `healthcheck` CLI command for container probes (`/app/sidecar healthcheck`)
+- `healthcheck` CLI command for container probes (`/app/sidecar healthcheck`, legacy binary name)
 - Local WAL append + replay when Redis is unavailable
 - Background DLQ scanner for over-retried pending entries
 
@@ -51,29 +52,31 @@ HTTP smoke:
 
 ```bash
 cd deepiri-platform
-make rtg-smoke
+make rtg-sugar-smoke
 ```
 
 gRPC smoke:
 
 ```bash
 cd deepiri-platform
-make rtg-grpc-smoke
+make rtg-sugar-grpc-smoke
 ```
 
 Fast full-chain gate:
 
 ```bash
 cd deepiri-platform
-make rtg-gate
+make rtg-sugar-gate
 ```
 
 Full chaos-inclusive gate:
 
 ```bash
 cd deepiri-platform
-make rtg-gate-full
+make rtg-sugar-gate-full
 ```
+
+Legacy aliases (`rtg-smoke`, `rtg-grpc-smoke`, `rtg-gate`, `rtg-gate-full`) continue to work.
 
 The gRPC smoke command executes `cmd/grpc-smoke` and validates:
 
@@ -86,4 +89,4 @@ The gRPC smoke command executes `cmd/grpc-smoke` and validates:
 
 - WAL backpressure/retention policies
 - Per-stream retry and DLQ policy overrides
-- Extended integration test matrix across all sidecar-attached services
+- Extended integration test matrix across all Sugar Glider-attached services

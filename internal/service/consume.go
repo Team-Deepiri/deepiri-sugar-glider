@@ -88,7 +88,7 @@ func (s *Sidecar) consumeGroupOnce(ctx context.Context, req readRequest) ([]read
 	}
 	if !config.IsStreamAllowed(s.cfg.ConsumeStreams, req.Stream) {
 		s.incrementError()
-		return nil, http.StatusForbidden, errors.New("stream not allowed for this sidecar")
+		return nil, http.StatusForbidden, errors.New("stream not allowed for this sugar glider")
 	}
 	if req.Count <= 0 {
 		req.Count = 10
@@ -150,7 +150,7 @@ func (s *Sidecar) ackEntriesInternal(ctx context.Context, req ackRequest) (int64
 	}
 	if !config.IsStreamAllowed(s.cfg.ConsumeStreams, req.Stream) {
 		s.incrementError()
-		return 0, http.StatusForbidden, errors.New("stream not allowed for this sidecar")
+		return 0, http.StatusForbidden, errors.New("stream not allowed for this sugar glider")
 	}
 
 	acked, err := s.redis.Raw().XAck(ctx, req.Stream, req.ConsumerGroup, req.EntryIDs...).Result()

@@ -165,7 +165,7 @@ func (s *Sidecar) StreamInfo(ctx context.Context, req *synapsev1.StreamInfoReque
 	}
 	if !config.IsStreamAllowed(s.cfg.PublishStreams, streamName) && !config.IsStreamAllowed(s.cfg.ConsumeStreams, streamName) {
 		s.incrementError()
-		return nil, status.Error(codes.PermissionDenied, "stream not allowed for this sidecar")
+		return nil, status.Error(codes.PermissionDenied, "stream not allowed for this sugar glider")
 	}
 
 	info, err := s.redis.Raw().XInfoStream(ctx, streamName).Result()

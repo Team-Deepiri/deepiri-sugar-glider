@@ -454,7 +454,7 @@ func (s *Sidecar) metrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# TYPE synapse_sidecar_dlq_moved_total counter\n")
 	fmt.Fprintf(w, "synapse_sidecar_dlq_moved_total %d\n", snapshot.DLQMoved)
 
-	fmt.Fprintf(w, "# HELP synapse_sidecar_errors_total Total sidecar operation errors.\n")
+	fmt.Fprintf(w, "# HELP synapse_sidecar_errors_total Total sugar glider operation errors.\n")
 	fmt.Fprintf(w, "# TYPE synapse_sidecar_errors_total counter\n")
 	fmt.Fprintf(w, "synapse_sidecar_errors_total %d\n", snapshot.Errors)
 
@@ -462,7 +462,7 @@ func (s *Sidecar) metrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# TYPE synapse_sidecar_wal_depth gauge\n")
 	fmt.Fprintf(w, "synapse_sidecar_wal_depth %d\n", depth)
 
-	fmt.Fprintf(w, "# HELP synapse_sidecar_uptime_seconds Sidecar uptime in seconds.\n")
+	fmt.Fprintf(w, "# HELP synapse_sidecar_uptime_seconds Sugar Glider uptime in seconds.\n")
 	fmt.Fprintf(w, "# TYPE synapse_sidecar_uptime_seconds gauge\n")
 	fmt.Fprintf(w, "synapse_sidecar_uptime_seconds %.0f\n", uptimeSeconds)
 }
@@ -520,7 +520,7 @@ func (s *Sidecar) publishInternal(
 	}
 	if !config.IsStreamAllowed(s.cfg.PublishStreams, req.Stream) {
 		s.incrementError()
-		return "", false, 0, http.StatusForbidden, errors.New("stream not allowed for this sidecar")
+		return "", false, 0, http.StatusForbidden, errors.New("stream not allowed for this sugar glider")
 	}
 	if req.EventType == "" {
 		s.incrementError()

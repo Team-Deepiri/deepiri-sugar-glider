@@ -20,7 +20,7 @@ func main() {
 
 	svc, err := service.New(cfg)
 	if err != nil {
-		slog.Error("failed to initialize sidecar", "error", err)
+		slog.Error("failed to initialize sugar glider", "error", err)
 		os.Exit(1)
 	}
 	defer svc.Close()
@@ -37,7 +37,7 @@ func main() {
 	defer stop()
 
 	slog.Info(
-		"starting synapse sidecar",
+		"starting synapse sugar glider",
 		"service",
 		cfg.ServiceName,
 		"http_listen",
@@ -46,7 +46,7 @@ func main() {
 		cfg.GRPCListenAddr,
 	)
 	if err := svc.Run(ctx); err != nil {
-		slog.Error("sidecar exited with error", "error", err)
+		slog.Error("sugar glider exited with error", "error", err)
 		os.Exit(1)
 	}
 }
