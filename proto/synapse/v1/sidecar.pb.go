@@ -770,7 +770,7 @@ const file_proto_synapse_v1_sidecar_proto_rawDesc = "" +
 	"\x03Ack\x12\x16.synapse.v1.AckRequest\x1a\x17.synapse.v1.AckResponse\x12K\n" +
 	"\n" +
 	"StreamInfo\x12\x1d.synapse.v1.StreamInfoRequest\x1a\x1e.synapse.v1.StreamInfoResponse\x12?\n" +
-	"\x06Health\x12\x19.synapse.v1.HealthRequest\x1a\x1a.synapse.v1.HealthResponseB\x89\x01Z\x86\x01github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/proto/synapse/v1;synapsev1b\x06proto3"
+	"\x06Health\x12\x19.synapse.v1.HealthRequest\x1a\x1a.synapse.v1.HealthResponseBIZGgithub.com/Team-Deepiri/deepiri-sugar-glider/proto/synapse/v1;synapsev1b\x06proto3"
 
 var (
 	file_proto_synapse_v1_sidecar_proto_rawDescOnce sync.Once

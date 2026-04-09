@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	synapsev1 "github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/proto/synapse/v1"
+	synapsev1 "github.com/Team-Deepiri/deepiri-sugar-glider/proto/synapse/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

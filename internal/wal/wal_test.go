@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/redisstreams"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/redisstreams"
 )
 
 func TestNewUsesSugarGliderWalByDefault(t *testing.T) {

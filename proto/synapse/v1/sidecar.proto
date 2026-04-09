@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package synapse.v1;
 
-option go_package = "github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/proto/synapse/v1;synapsev1";
+option go_package = "github.com/Team-Deepiri/deepiri-sugar-glider/proto/synapse/v1;synapsev1";
 
 service SynapseSidecar {
   rpc Publish(PublishRequest) returns (PublishResponse);

@@ -17,19 +17,51 @@ fi
 
 cd "${ROOT_DIR}"
 
-"${BUF_BIN}" generate
-
-# Ensure Python package dirs are importable in both service trees.
-for base in \
-    "${ROOT_DIR}/../../../../diri-cyrex/app/integrations/streaming/gen" \
-    "${ROOT_DIR}/../../../../diri-helox/integrations/streaming/gen"
-do
+ensure_python_pkg_dirs() {
+    local base="$1"
     mkdir -p "${base}/synapse/v1" "${base}/proto/synapse/v1"
     touch "${base}/proto/__init__.py"
     touch "${base}/proto/synapse/__init__.py"
     touch "${base}/proto/synapse/v1/__init__.py"
     touch "${base}/synapse/__init__.py"
     touch "${base}/synapse/v1/__init__.py"
-done
+}
 
-echo "Proto generation complete."
+"${BUF_BIN}" generate --template "${ROOT_DIR}/buf.gen.yaml"
+
+CYREX_PY_GEN_OUT="${CYREX_PY_GEN_OUT:-}"
+HELOX_PY_GEN_OUT="${HELOX_PY_GEN_OUT:-}"
+
+if [ -n "${CYREX_PY_GEN_OUT}" ] || [ -n "${HELOX_PY_GEN_OUT}" ]; then
+    PY_TEMPLATE="$(mktemp)"
+    trap 'rm -f "${PY_TEMPLATE}"' EXIT
+
+    {
+        echo "version: v1"
+        echo
+        echo "plugins:"
+        if [ -n "${CYREX_PY_GEN_OUT}" ]; then
+            echo "  - plugin: buf.build/protocolbuffers/python"
+            echo "    out: ${CYREX_PY_GEN_OUT}"
+            echo "  - plugin: buf.build/grpc/python"
+            echo "    out: ${CYREX_PY_GEN_OUT}"
+        fi
+        if [ -n "${HELOX_PY_GEN_OUT}" ]; then
+            echo "  - plugin: buf.build/protocolbuffers/python"
+            echo "    out: ${HELOX_PY_GEN_OUT}"
+            echo "  - plugin: buf.build/grpc/python"
+            echo "    out: ${HELOX_PY_GEN_OUT}"
+        fi
+    } > "${PY_TEMPLATE}"
+
+    "${BUF_BIN}" generate --template "${PY_TEMPLATE}"
+
+    if [ -n "${CYREX_PY_GEN_OUT}" ]; then
+        ensure_python_pkg_dirs "${CYREX_PY_GEN_OUT}"
+    fi
+    if [ -n "${HELOX_PY_GEN_OUT}" ]; then
+        ensure_python_pkg_dirs "${HELOX_PY_GEN_OUT}"
+    fi
+fi
+
+echo "Proto generation complete (Go stubs updated)."
