@@ -3,10 +3,69 @@ package wal
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/redisstreams"
 )
+
+func TestNewUsesSugarGliderWalByDefault(t *testing.T) {
+	t.Parallel()
+
+	logDir := t.TempDir()
+	w, err := New(logDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if !strings.HasSuffix(w.Path(), sugarGliderWALFilename) {
+		t.Fatalf("Path() = %q, want suffix %q", w.Path(), sugarGliderWALFilename)
+	}
+}
+
+func TestNewUsesLegacyWalWhenPresent(t *testing.T) {
+	t.Parallel()
+
+	logDir := t.TempDir()
+	legacyPath := filepath.Join(logDir, legacyWALFilename)
+	if err := os.WriteFile(legacyPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile(legacy) error = %v", err)
+	}
+
+	w, err := New(logDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if w.Path() != legacyPath {
+		t.Fatalf("Path() = %q, want %q", w.Path(), legacyPath)
+	}
+}
+
+func TestNewPrefersSugarGliderWalWhenBothPresent(t *testing.T) {
+	t.Parallel()
+
+	logDir := t.TempDir()
+	sugarPath := filepath.Join(logDir, sugarGliderWALFilename)
+	legacyPath := filepath.Join(logDir, legacyWALFilename)
+	if err := os.WriteFile(sugarPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile(sugar) error = %v", err)
+	}
+	if err := os.WriteFile(legacyPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile(legacy) error = %v", err)
+	}
+
+	w, err := New(logDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if w.Path() != sugarPath {
+		t.Fatalf("Path() = %q, want %q", w.Path(), sugarPath)
+	}
+}
 
 func TestReplaySuccessDrainsWAL(t *testing.T) {
 	t.Parallel()

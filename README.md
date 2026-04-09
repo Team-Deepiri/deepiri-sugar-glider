@@ -24,6 +24,7 @@ Legacy module/path names remain `synapse-sidecar` for compatibility.
 - `SIDECAR_CONSUME_STREAMS` (default: empty = allow all streams)
 - `SIDECAR_MAX_STREAM_LEN` (default: `10000`)
 - `SIDECAR_WAL_DIR` (default: `/data/synapse-wal`)
+- WAL filename defaults to `sugar-glider.wal.jsonl` and will reuse legacy `sidecar.wal.jsonl` if present.
 - `SIDECAR_WAL_REPLAY_BATCH` (default: `100`; set `0` to disable replay)
 - `SIDECAR_WAL_REPLAY_INTERVAL_MS` (default: `2000`; set `0` to disable timer loop)
 - `SIDECAR_DLQ_MAX_RETRIES` (default: `3`; set `0` to disable DLQ scanner)

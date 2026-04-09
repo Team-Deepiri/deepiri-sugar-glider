@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,11 +26,38 @@ type Log struct {
 	mu   sync.Mutex
 }
 
+const (
+	sugarGliderWALFilename = "sugar-glider.wal.jsonl"
+	legacyWALFilename      = "sidecar.wal.jsonl"
+)
+
 func New(dir string) (*Log, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create wal dir: %w", err)
 	}
-	return &Log{path: filepath.Join(dir, "sidecar.wal.jsonl")}, nil
+	path, err := resolveWALPath(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve wal path: %w", err)
+	}
+	return &Log{path: path}, nil
+}
+
+func resolveWALPath(dir string) (string, error) {
+	sugarPath := filepath.Join(dir, sugarGliderWALFilename)
+	if _, err := os.Stat(sugarPath); err == nil {
+		return sugarPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	legacyPath := filepath.Join(dir, legacyWALFilename)
+	if _, err := os.Stat(legacyPath); err == nil {
+		return legacyPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	return sugarPath, nil
 }
 
 func (l *Log) Append(reason string, req redisstreams.PublishRequest) error {
