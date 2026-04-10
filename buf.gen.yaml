@@ -9,13 +9,3 @@ plugins:
     out: .
     opt:
       - paths=source_relative
-
-  - plugin: buf.build/protocolbuffers/python
-    out: ../../../../diri-cyrex/app/integrations/streaming/gen
-  - plugin: buf.build/grpc/python
-    out: ../../../../diri-cyrex/app/integrations/streaming/gen
-
-  - plugin: buf.build/protocolbuffers/python
-    out: ../../../../diri-helox/integrations/streaming/gen
-  - plugin: buf.build/grpc/python
-    out: ../../../../diri-helox/integrations/streaming/gen

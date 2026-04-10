@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/config"
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/service"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/config"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/service"
 )
 
 func main() {

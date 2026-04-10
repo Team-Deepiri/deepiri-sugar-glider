@@ -1,4 +1,4 @@
-module github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar
+module github.com/Team-Deepiri/deepiri-sugar-glider
 
 go 1.24.0
 

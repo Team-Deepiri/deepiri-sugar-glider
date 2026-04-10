@@ -15,11 +15,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/config"
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/health"
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/redisstreams"
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/wal"
-	synapsev1 "github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/proto/synapse/v1"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/config"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/health"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/redisstreams"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/wal"
+	synapsev1 "github.com/Team-Deepiri/deepiri-sugar-glider/proto/synapse/v1"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 )

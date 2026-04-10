@@ -1,4 +1,4 @@
-# Synapse Sugar Glider (Go) in `real-time-gateway`
+# Deepiri Sugar Glider (Go)
 
 This transport service (formerly Synapse Sidecar) runs next to the realtime gateway and owns Redis Streams concerns (publish, consume, ack, WAL replay, and DLQ scanning).
 Legacy module/path names remain `synapse-sidecar` for compatibility.
@@ -34,29 +34,36 @@ Legacy module/path names remain `synapse-sidecar` for compatibility.
 
 ## Proto generation
 
-Generate Go + Python stubs from one proto source:
+Generate Go stubs from one proto source:
 
 ```bash
-cd platform-services/backend/deepiri-realtime-gateway/synapse-sidecar
+cd deepiri-sugar-glider
+./scripts/generate_protos.sh
+```
+
+To also generate Python stubs into consumer repos, provide explicit output paths:
+
+```bash
+CYREX_PY_GEN_OUT=/abs/path/to/diri-cyrex/app/integrations/streaming/gen \
+HELOX_PY_GEN_OUT=/abs/path/to/diri-helox/integrations/streaming/gen \
 ./scripts/generate_protos.sh
 ```
 
 This updates:
 
 - `proto/synapse/v1/*.pb.go` (Go stubs)
-- `diri-cyrex/app/integrations/streaming/gen/...` (Python stubs)
-- `diri-helox/integrations/streaming/gen/...` (Python stubs)
+- Python stubs in Cyrex/Helox only when `CYREX_PY_GEN_OUT` / `HELOX_PY_GEN_OUT` are provided
 
 ## Local smoke checks
 
-HTTP smoke:
+Unit/integration tests in this repo:
 
 ```bash
-cd deepiri-platform
-make rtg-sugar-smoke
+cd deepiri-sugar-glider
+go test ./...
 ```
 
-gRPC smoke:
+Platform integration smoke (from deepiri-platform):
 
 ```bash
 cd deepiri-platform

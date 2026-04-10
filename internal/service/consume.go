@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/config"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/config"
 	"github.com/redis/go-redis/v9"
 )
 

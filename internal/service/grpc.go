@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/config"
-	"github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/internal/redisstreams"
-	synapsev1 "github.com/Team-Deepiri/deepiri-platform/platform-services/backend/deepiri-realtime-gateway/synapse-sidecar/proto/synapse/v1"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/config"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/redisstreams"
+	synapsev1 "github.com/Team-Deepiri/deepiri-sugar-glider/proto/synapse/v1"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
