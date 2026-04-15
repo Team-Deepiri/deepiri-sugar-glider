@@ -3,7 +3,7 @@ module github.com/Team-Deepiri/deepiri-sugar-glider
 go 1.24.0
 
 require (
-	github.com/redis/go-redis/v9 v9.7.0
+	github.com/redis/go-redis/v9 v9.7.3
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
 )
