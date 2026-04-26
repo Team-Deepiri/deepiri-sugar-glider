@@ -98,6 +98,9 @@ func (s *Sidecar) Subscribe(req *synapsev1.SubscribeRequest, stream grpc.ServerS
 		s.incrementError()
 		return status.Error(codes.InvalidArgument, "request is required")
 	}
+	if s.cfg.ConsumeMode == config.ConsumeModeDispatcher {
+		return s.subscribeWithDispatcher(req, stream)
+	}
 
 	count := int64(req.GetBatchSize())
 	if count <= 0 {
@@ -134,12 +137,67 @@ func (s *Sidecar) Subscribe(req *synapsev1.SubscribeRequest, stream grpc.ServerS
 	return nil
 }
 
+func (s *Sidecar) subscribeWithDispatcher(
+	req *synapsev1.SubscribeRequest,
+	stream grpc.ServerStreamingServer[synapsev1.Event],
+) error {
+	if s.dispatcherManager == nil {
+		s.incrementError()
+		return status.Error(codes.Internal, "dispatcher mode is enabled but dispatcher manager is not initialized")
+	}
+
+	subscription, err := s.dispatcherManager.Subscribe(readRequest{
+		Stream:        req.GetStream(),
+		ConsumerGroup: req.GetConsumerGroup(),
+		ConsumerName:  req.GetConsumerName(),
+		Count:         int64(req.GetBatchSize()),
+		BlockMS:       s.cfg.DispatcherBlockMS,
+	})
+	if err != nil {
+		s.incrementError()
+		return grpcStatusFromHTTPStatus(http.StatusBadRequest, err.Error())
+	}
+	defer subscription.Close()
+
+	for {
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case event, ok := <-subscription.Events():
+			if !ok {
+				if stream.Context().Err() != nil {
+					return nil
+				}
+				return status.Error(codes.Unavailable, "dispatcher stream closed")
+			}
+			if sendErr := stream.Send(event); sendErr != nil {
+				return status.Errorf(codes.Unavailable, "failed to stream event: %v", sendErr)
+			}
+		}
+	}
+}
+
 func (s *Sidecar) Ack(ctx context.Context, req *synapsev1.AckRequest) (*synapsev1.AckResponse, error) {
 	s.incrementAckRequest()
+	s.incrementAckRPCRequest()
 
 	if req == nil {
 		s.incrementError()
 		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if s.cfg.ConsumeMode == config.ConsumeModeDispatcher && s.dispatcherManager != nil {
+		acked, err := s.dispatcherManager.QueueAck(ackRequest{
+			Stream:        req.GetStream(),
+			ConsumerGroup: req.GetConsumerGroup(),
+			EntryIDs:      req.GetEntryIds(),
+		})
+		if err == nil {
+			return &synapsev1.AckResponse{Acked: int32(acked)}, nil
+		}
+		if !errors.Is(err, errDispatcherNotFound) {
+			s.incrementError()
+			return nil, status.Error(codes.Unavailable, err.Error())
+		}
 	}
 
 	acked, statusCode, err := s.ackEntriesInternal(ctx, ackRequest{
@@ -215,6 +273,8 @@ func grpcStatusFromHTTPStatus(statusCode int, message string) error {
 		return status.Error(codes.NotFound, message)
 	case http.StatusServiceUnavailable:
 		return status.Error(codes.Unavailable, message)
+	case http.StatusGatewayTimeout:
+		return status.Error(codes.DeadlineExceeded, message)
 	default:
 		return status.Error(codes.Internal, message)
 	}

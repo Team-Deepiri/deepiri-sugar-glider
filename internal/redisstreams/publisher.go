@@ -28,6 +28,11 @@ func NewPublisher(client *Client, maxStreamLen int64) *Publisher {
 }
 
 func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (string, error) {
+	args := BuildXAddArgs(req, p.maxStreamLen)
+	return p.redis.XAdd(ctx, args).Result()
+}
+
+func BuildXAddArgs(req PublishRequest, maxStreamLen int64) *redis.XAddArgs {
 	if req.Priority == "" {
 		req.Priority = "normal"
 	}
@@ -35,23 +40,34 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (string, er
 		req.Sender = "real-time-gateway"
 	}
 
-	values := map[string]any{
-		"event_type": req.EventType,
-		"sender":     req.Sender,
-		"recipient":  req.Recipient,
-		"priority":   req.Priority,
-		"payload":    []byte(req.Payload),
-		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
+	// Pre-size XADD field/value pairs to avoid extra allocations on the hot path.
+	fieldPairs := 5
+	if req.Recipient != "" {
+		fieldPairs++
 	}
 	if req.TTLSec > 0 {
-		values["ttl_sec"] = req.TTLSec
+		fieldPairs++
+	}
+	values := make([]any, 0, fieldPairs*2)
+	values = append(
+		values,
+		"event_type", req.EventType,
+		"sender", req.Sender,
+		"priority", req.Priority,
+		"payload", string(req.Payload),
+		"timestamp", time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	if req.Recipient != "" {
+		values = append(values, "recipient", req.Recipient)
+	}
+	if req.TTLSec > 0 {
+		values = append(values, "ttl_sec", req.TTLSec)
 	}
 
-	args := &redis.XAddArgs{
+	return &redis.XAddArgs{
 		Stream: req.Stream,
-		MaxLen: p.maxStreamLen,
+		MaxLen: maxStreamLen,
 		Approx: true,
 		Values: values,
 	}
-	return p.redis.XAdd(ctx, args).Result()
 }

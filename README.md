@@ -23,6 +23,15 @@ Legacy module/path names remain `synapse-sidecar` for compatibility.
 - `SIDECAR_PUBLISH_STREAMS` (default: `platform-events`)
 - `SIDECAR_CONSUME_STREAMS` (default: empty = allow all streams)
 - `SIDECAR_MAX_STREAM_LEN` (default: `10000`)
+- Dispatcher consume tuning:
+- `SIDECAR_DISPATCHER_CONSUMER_NAME` (default: `sugar-glider-dispatcher`)
+- `SIDECAR_DISPATCHER_READ_COUNT` (default: `100`)
+- `SIDECAR_DISPATCHER_BLOCK_MS` (default: `1000`)
+- `SIDECAR_DISPATCHER_SUBSCRIBER_BUFFER` (default: `256`)
+- `SIDECAR_DISPATCHER_ACK_BATCH_SIZE` (default: `64`)
+- `SIDECAR_DISPATCHER_ACK_FLUSH_CONCURRENCY` (default: `2`)
+- `SIDECAR_DISPATCHER_ACK_FLUSH_MS` (default: `10`)
+- `SIDECAR_DISPATCHER_ACK_QUEUE_SIZE` (default: `4096`)
 - `SIDECAR_WAL_DIR` (default: `/data/synapse-wal`)
 - WAL filename defaults to `sugar-glider.wal.jsonl` and will reuse legacy `sidecar.wal.jsonl` if present.
 - `SIDECAR_WAL_REPLAY_BATCH` (default: `100`; set `0` to disable replay)
