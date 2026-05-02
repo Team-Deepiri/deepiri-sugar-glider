@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -267,6 +268,7 @@ func (d *streamDispatcher) queueAck(entryIDs []string) (int, error) {
 	case <-d.ctx.Done():
 		return 0, errDispatcherClosed
 	case d.ackQueue <- cleaned:
+		d.sidecar.observeDispatcherAckQueueDepth(len(d.ackQueue))
 		return len(cleaned), nil
 	default:
 		return 0, errDispatcherAckBacklog
@@ -298,6 +300,7 @@ func (d *streamDispatcher) runReadLoop() {
 			continue
 		}
 
+		readStart := time.Now()
 		streams, err := d.sidecar.redis.Raw().XReadGroup(d.ctx, &redis.XReadGroupArgs{
 			Group:    d.consumerGroup,
 			Consumer: d.consumerName,
@@ -305,6 +308,7 @@ func (d *streamDispatcher) runReadLoop() {
 			Count:    d.readCount,
 			Block:    d.blockDuration,
 		}).Result()
+		d.sidecar.observeDispatcherReadDuration(time.Since(readStart))
 		if err != nil {
 			if err == redis.Nil {
 				continue
@@ -338,16 +342,20 @@ func (d *streamDispatcher) runReadLoop() {
 		}
 
 		d.sidecar.incrementReadEvents(uint64(len(events)))
+		fanOutStart := time.Now()
 		d.fanOut(events)
+		d.sidecar.observeDispatcherFanOutDuration(time.Since(fanOutStart))
 	}
 }
 
 func (d *streamDispatcher) runAckLoop() {
 	pending := make(map[string]struct{})
+	pendingInputEntries := 0
 	ticker := time.NewTicker(d.ackFlushInterval)
 	defer ticker.Stop()
 
 	addPending := func(entryIDs []string) {
+		pendingInputEntries += len(entryIDs)
 		for _, entryID := range entryIDs {
 			pending[entryID] = struct{}{}
 		}
@@ -368,6 +376,8 @@ func (d *streamDispatcher) runAckLoop() {
 		if len(pending) == 0 {
 			return
 		}
+		flushStart := time.Now()
+		chunkCount := 0
 
 		entryIDs := make([]string, 0, len(pending))
 		for entryID := range pending {
@@ -376,6 +386,8 @@ func (d *streamDispatcher) runAckLoop() {
 		sort.Strings(entryIDs)
 
 		chunks := chunkStringSlice(entryIDs, d.ackBatchSize)
+		chunkCount = len(chunks)
+		contiguousSpans, contiguousSavedEntries := countContiguousAckSpans(entryIDs)
 		batchChunks := d.ackFlushConcurrency
 		if batchChunks <= 0 {
 			batchChunks = 1
@@ -402,6 +414,14 @@ func (d *streamDispatcher) runAckLoop() {
 				return
 			}
 		}
+		d.sidecar.observeDispatcherAckCompression(
+			pendingInputEntries,
+			len(entryIDs),
+			contiguousSpans,
+			contiguousSavedEntries,
+		)
+		pendingInputEntries = len(pending)
+		d.sidecar.observeDispatcherAckFlush(time.Since(flushStart), chunkCount)
 	}
 
 	for {
@@ -460,6 +480,10 @@ func (d *streamDispatcher) flushAckChunkBatch(chunks [][]string, pending map[str
 	if len(chunks) == 0 {
 		return nil
 	}
+	execStart := time.Now()
+	defer func() {
+		d.sidecar.observeDispatcherAckExecDuration(time.Since(execStart))
+	}()
 
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -500,6 +524,73 @@ func (d *streamDispatcher) flushAckChunkBatch(chunks [][]string, pending map[str
 	}
 
 	return nil
+}
+
+type streamIDParts struct {
+	ms  uint64
+	seq uint64
+}
+
+func countContiguousAckSpans(entryIDs []string) (int, int) {
+	if len(entryIDs) == 0 {
+		return 0, 0
+	}
+
+	parts := make([]streamIDParts, 0, len(entryIDs))
+	for _, entryID := range entryIDs {
+		parsed, ok := parseStreamIDParts(entryID)
+		if ok {
+			parts = append(parts, parsed)
+		}
+	}
+	if len(parts) == 0 {
+		return 0, 0
+	}
+
+	sort.Slice(parts, func(i, j int) bool {
+		if parts[i].ms != parts[j].ms {
+			return parts[i].ms < parts[j].ms
+		}
+		return parts[i].seq < parts[j].seq
+	})
+
+	spans := 1
+	currentSpanLength := 1
+	savedEntries := 0
+	for i := 1; i < len(parts); i++ {
+		previous := parts[i-1]
+		current := parts[i]
+		if current.ms == previous.ms && current.seq == previous.seq+1 {
+			currentSpanLength++
+			continue
+		}
+		if currentSpanLength > 1 {
+			savedEntries += currentSpanLength - 1
+		}
+		spans++
+		currentSpanLength = 1
+	}
+	if currentSpanLength > 1 {
+		savedEntries += currentSpanLength - 1
+	}
+
+	return spans, savedEntries
+}
+
+func parseStreamIDParts(entryID string) (streamIDParts, bool) {
+	msRaw, seqRaw, ok := strings.Cut(entryID, "-")
+	if !ok {
+		return streamIDParts{}, false
+	}
+	ms, err := strconv.ParseUint(msRaw, 10, 64)
+	if err != nil {
+		return streamIDParts{}, false
+	}
+	seq, err := strconv.ParseUint(seqRaw, 10, 64)
+	if err != nil {
+		return streamIDParts{}, false
+	}
+	return streamIDParts{ms: ms, seq: seq}, true
 }
 
 type dispatcherSubscription struct {

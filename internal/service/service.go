@@ -58,6 +58,25 @@ type Sidecar struct {
 	walReplaySyncCalls            uint64
 	dlqMoved                      uint64
 	dispatcherDroppedSubscribers  uint64
+	dispatcherReadSamples         uint64
+	dispatcherReadDurationNS      uint64
+	dispatcherReadDurationNSMax   uint64
+	dispatcherFanOutSamples       uint64
+	dispatcherFanOutDurationNS    uint64
+	dispatcherFanOutDurationNSMax uint64
+	dispatcherAckFlushCalls       uint64
+	dispatcherAckFlushChunks      uint64
+	dispatcherAckFlushDurationNS  uint64
+	dispatcherAckFlushDurationMax uint64
+	dispatcherAckExecSamples      uint64
+	dispatcherAckExecDurationNS   uint64
+	dispatcherAckExecDurationMax  uint64
+	dispatcherAckQueueDepthPeak   uint64
+	dispatcherAckInputEntries     uint64
+	dispatcherAckDedupedEntries   uint64
+	dispatcherAckDuplicateEntries uint64
+	dispatcherAckContiguousSpans  uint64
+	dispatcherAckContiguousSaved  uint64
 	errorCount                    uint64
 }
 
@@ -77,6 +96,25 @@ type metricsSnapshot struct {
 	AckRequests                   uint64 `json:"ack_requests"`
 	AckRPCRequests                uint64 `json:"ack_rpc_requests"`
 	AckedEntries                  uint64 `json:"acked_entries"`
+	DispatcherReadSamples         uint64 `json:"dispatcher_read_samples"`
+	DispatcherReadDurationMS      uint64 `json:"dispatcher_read_duration_ms_total"`
+	DispatcherReadDurationMSMax   uint64 `json:"dispatcher_read_duration_ms_max"`
+	DispatcherFanOutSamples       uint64 `json:"dispatcher_fanout_samples"`
+	DispatcherFanOutDurationMS    uint64 `json:"dispatcher_fanout_duration_ms_total"`
+	DispatcherFanOutDurationMSMax uint64 `json:"dispatcher_fanout_duration_ms_max"`
+	DispatcherAckFlushCalls       uint64 `json:"dispatcher_ack_flush_calls"`
+	DispatcherAckFlushChunks      uint64 `json:"dispatcher_ack_flush_chunks"`
+	DispatcherAckFlushDurationMS  uint64 `json:"dispatcher_ack_flush_duration_ms_total"`
+	DispatcherAckFlushDurationMax uint64 `json:"dispatcher_ack_flush_duration_ms_max"`
+	DispatcherAckExecSamples      uint64 `json:"dispatcher_ack_exec_samples"`
+	DispatcherAckExecDurationMS   uint64 `json:"dispatcher_ack_exec_duration_ms_total"`
+	DispatcherAckExecDurationMax  uint64 `json:"dispatcher_ack_exec_duration_ms_max"`
+	DispatcherAckQueueDepthPeak   uint64 `json:"dispatcher_ack_queue_depth_peak"`
+	DispatcherAckInputEntries     uint64 `json:"dispatcher_ack_input_entries"`
+	DispatcherAckDedupedEntries   uint64 `json:"dispatcher_ack_deduped_entries"`
+	DispatcherAckDuplicateEntries uint64 `json:"dispatcher_ack_duplicate_entries"`
+	DispatcherAckContiguousSpans  uint64 `json:"dispatcher_ack_contiguous_spans"`
+	DispatcherAckContiguousSaved  uint64 `json:"dispatcher_ack_contiguous_saved_entries"`
 	GroupEnsureAttempts           uint64 `json:"group_ensure_attempts"`
 	WALReplayed                   uint64 `json:"wal_replayed"`
 	WALReplaySyncCalls            uint64 `json:"wal_replay_sync_calls"`
@@ -555,6 +593,82 @@ func (s *Sidecar) metrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_dropped_subscribers_total counter\n")
 	fmt.Fprintf(w, "synapse_sidecar_dispatcher_dropped_subscribers_total %d\n", snapshot.DispatcherDroppedSubscribers)
 
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_read_samples_total Total dispatcher read samples.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_read_samples_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_read_samples_total %d\n", snapshot.DispatcherReadSamples)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_read_duration_ms_total Total dispatcher read-loop Redis read duration in ms.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_read_duration_ms_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_read_duration_ms_total %d\n", snapshot.DispatcherReadDurationMS)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_read_duration_ms_max Max dispatcher read-loop Redis read duration in ms.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_read_duration_ms_max gauge\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_read_duration_ms_max %d\n", snapshot.DispatcherReadDurationMSMax)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_fanout_samples_total Total dispatcher fan-out samples.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_fanout_samples_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_fanout_samples_total %d\n", snapshot.DispatcherFanOutSamples)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_fanout_duration_ms_total Total dispatcher fan-out duration in ms.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_fanout_duration_ms_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_fanout_duration_ms_total %d\n", snapshot.DispatcherFanOutDurationMS)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_fanout_duration_ms_max Max dispatcher fan-out duration in ms.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_fanout_duration_ms_max gauge\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_fanout_duration_ms_max %d\n", snapshot.DispatcherFanOutDurationMSMax)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_flush_calls_total Total dispatcher ack flush invocations.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_flush_calls_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_flush_calls_total %d\n", snapshot.DispatcherAckFlushCalls)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_flush_chunks_total Total dispatcher ack chunks processed across flush calls.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_flush_chunks_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_flush_chunks_total %d\n", snapshot.DispatcherAckFlushChunks)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_flush_duration_ms_total Total dispatcher ack flush duration in ms.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_flush_duration_ms_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_flush_duration_ms_total %d\n", snapshot.DispatcherAckFlushDurationMS)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_flush_duration_ms_max Max dispatcher ack flush duration in ms.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_flush_duration_ms_max gauge\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_flush_duration_ms_max %d\n", snapshot.DispatcherAckFlushDurationMax)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_exec_samples_total Total dispatcher Redis ack pipeline exec samples.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_exec_samples_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_exec_samples_total %d\n", snapshot.DispatcherAckExecSamples)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_exec_duration_ms_total Total dispatcher Redis ack pipeline exec duration in ms.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_exec_duration_ms_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_exec_duration_ms_total %d\n", snapshot.DispatcherAckExecDurationMS)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_exec_duration_ms_max Max dispatcher Redis ack pipeline exec duration in ms.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_exec_duration_ms_max gauge\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_exec_duration_ms_max %d\n", snapshot.DispatcherAckExecDurationMax)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_queue_depth_peak Peak dispatcher ack queue depth.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_queue_depth_peak gauge\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_queue_depth_peak %d\n", snapshot.DispatcherAckQueueDepthPeak)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_input_entries_total Total dispatcher ack entry IDs received before dedupe.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_input_entries_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_input_entries_total %d\n", snapshot.DispatcherAckInputEntries)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_deduped_entries_total Total dispatcher ack entry IDs after pending-map dedupe.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_deduped_entries_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_deduped_entries_total %d\n", snapshot.DispatcherAckDedupedEntries)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_duplicate_entries_total Total dispatcher ack entry IDs removed by pending-map dedupe.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_duplicate_entries_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_duplicate_entries_total %d\n", snapshot.DispatcherAckDuplicateEntries)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_contiguous_spans_total Total contiguous Redis stream ID spans observed in ack flushes.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_contiguous_spans_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_contiguous_spans_total %d\n", snapshot.DispatcherAckContiguousSpans)
+
+	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_contiguous_saved_entries_total Total ack IDs that could be saved if Redis supported range-style XACK for observed spans.\n")
+	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_contiguous_saved_entries_total counter\n")
+	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_contiguous_saved_entries_total %d\n", snapshot.DispatcherAckContiguousSaved)
+
 	fmt.Fprintf(w, "# HELP synapse_sidecar_errors_total Total sugar glider operation errors.\n")
 	fmt.Fprintf(w, "# TYPE synapse_sidecar_errors_total counter\n")
 	fmt.Fprintf(w, "synapse_sidecar_errors_total %d\n", snapshot.Errors)
@@ -819,6 +933,51 @@ func (s *Sidecar) incrementDispatcherDroppedSubscribers() {
 	atomic.AddUint64(&s.dispatcherDroppedSubscribers, 1)
 }
 
+func (s *Sidecar) observeDispatcherReadDuration(duration time.Duration) {
+	observeDurationMillis(&s.dispatcherReadSamples, &s.dispatcherReadDurationNS, &s.dispatcherReadDurationNSMax, duration)
+}
+
+func (s *Sidecar) observeDispatcherFanOutDuration(duration time.Duration) {
+	observeDurationMillis(&s.dispatcherFanOutSamples, &s.dispatcherFanOutDurationNS, &s.dispatcherFanOutDurationNSMax, duration)
+}
+
+func (s *Sidecar) observeDispatcherAckFlush(duration time.Duration, chunks int) {
+	atomic.AddUint64(&s.dispatcherAckFlushCalls, 1)
+	if chunks > 0 {
+		atomic.AddUint64(&s.dispatcherAckFlushChunks, uint64(chunks))
+	}
+	observeDurationMillis(nil, &s.dispatcherAckFlushDurationNS, &s.dispatcherAckFlushDurationMax, duration)
+}
+
+func (s *Sidecar) observeDispatcherAckExecDuration(duration time.Duration) {
+	observeDurationMillis(&s.dispatcherAckExecSamples, &s.dispatcherAckExecDurationNS, &s.dispatcherAckExecDurationMax, duration)
+}
+
+func (s *Sidecar) observeDispatcherAckQueueDepth(depth int) {
+	if depth <= 0 {
+		return
+	}
+	atomicMaxUint64(&s.dispatcherAckQueueDepthPeak, uint64(depth))
+}
+
+func (s *Sidecar) observeDispatcherAckCompression(inputEntries int, dedupedEntries int, contiguousSpans int, contiguousSavedEntries int) {
+	if inputEntries > 0 {
+		atomic.AddUint64(&s.dispatcherAckInputEntries, uint64(inputEntries))
+	}
+	if dedupedEntries > 0 {
+		atomic.AddUint64(&s.dispatcherAckDedupedEntries, uint64(dedupedEntries))
+	}
+	if inputEntries > dedupedEntries {
+		atomic.AddUint64(&s.dispatcherAckDuplicateEntries, uint64(inputEntries-dedupedEntries))
+	}
+	if contiguousSpans > 0 {
+		atomic.AddUint64(&s.dispatcherAckContiguousSpans, uint64(contiguousSpans))
+	}
+	if contiguousSavedEntries > 0 {
+		atomic.AddUint64(&s.dispatcherAckContiguousSaved, uint64(contiguousSavedEntries))
+	}
+}
+
 func (s *Sidecar) incrementError() {
 	atomic.AddUint64(&s.errorCount, 1)
 }
@@ -847,6 +1006,25 @@ func (s *Sidecar) getMetricsSnapshot() metricsSnapshot {
 		AckRequests:                   atomic.LoadUint64(&s.ackRequests),
 		AckRPCRequests:                atomic.LoadUint64(&s.ackRPCRequests),
 		AckedEntries:                  atomic.LoadUint64(&s.ackedEntries),
+		DispatcherReadSamples:         atomic.LoadUint64(&s.dispatcherReadSamples),
+		DispatcherReadDurationMS:      nsToMsUint64(atomic.LoadUint64(&s.dispatcherReadDurationNS)),
+		DispatcherReadDurationMSMax:   nsToMsUint64(atomic.LoadUint64(&s.dispatcherReadDurationNSMax)),
+		DispatcherFanOutSamples:       atomic.LoadUint64(&s.dispatcherFanOutSamples),
+		DispatcherFanOutDurationMS:    nsToMsUint64(atomic.LoadUint64(&s.dispatcherFanOutDurationNS)),
+		DispatcherFanOutDurationMSMax: nsToMsUint64(atomic.LoadUint64(&s.dispatcherFanOutDurationNSMax)),
+		DispatcherAckFlushCalls:       atomic.LoadUint64(&s.dispatcherAckFlushCalls),
+		DispatcherAckFlushChunks:      atomic.LoadUint64(&s.dispatcherAckFlushChunks),
+		DispatcherAckFlushDurationMS:  nsToMsUint64(atomic.LoadUint64(&s.dispatcherAckFlushDurationNS)),
+		DispatcherAckFlushDurationMax: nsToMsUint64(atomic.LoadUint64(&s.dispatcherAckFlushDurationMax)),
+		DispatcherAckExecSamples:      atomic.LoadUint64(&s.dispatcherAckExecSamples),
+		DispatcherAckExecDurationMS:   nsToMsUint64(atomic.LoadUint64(&s.dispatcherAckExecDurationNS)),
+		DispatcherAckExecDurationMax:  nsToMsUint64(atomic.LoadUint64(&s.dispatcherAckExecDurationMax)),
+		DispatcherAckQueueDepthPeak:   atomic.LoadUint64(&s.dispatcherAckQueueDepthPeak),
+		DispatcherAckInputEntries:     atomic.LoadUint64(&s.dispatcherAckInputEntries),
+		DispatcherAckDedupedEntries:   atomic.LoadUint64(&s.dispatcherAckDedupedEntries),
+		DispatcherAckDuplicateEntries: atomic.LoadUint64(&s.dispatcherAckDuplicateEntries),
+		DispatcherAckContiguousSpans:  atomic.LoadUint64(&s.dispatcherAckContiguousSpans),
+		DispatcherAckContiguousSaved:  atomic.LoadUint64(&s.dispatcherAckContiguousSaved),
 		GroupEnsureAttempts:           atomic.LoadUint64(&s.groupEnsureAttempts),
 		WALReplayed:                   atomic.LoadUint64(&s.walReplayed),
 		WALReplaySyncCalls:            atomic.LoadUint64(&s.walReplaySyncCalls),
@@ -860,4 +1038,32 @@ func writeJSON(w http.ResponseWriter, status int, payload map[string]any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func observeDurationMillis(samples *uint64, totalNS *uint64, maxNS *uint64, duration time.Duration) {
+	if duration <= 0 {
+		return
+	}
+	ns := uint64(duration.Nanoseconds())
+	if samples != nil {
+		atomic.AddUint64(samples, 1)
+	}
+	atomic.AddUint64(totalNS, ns)
+	atomicMaxUint64(maxNS, ns)
+}
+
+func atomicMaxUint64(target *uint64, candidate uint64) {
+	for {
+		current := atomic.LoadUint64(target)
+		if candidate <= current {
+			return
+		}
+		if atomic.CompareAndSwapUint64(target, current, candidate) {
+			return
+		}
+	}
+}
+
+func nsToMsUint64(value uint64) uint64 {
+	return value / uint64(time.Millisecond)
 }
