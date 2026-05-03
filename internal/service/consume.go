@@ -100,24 +100,32 @@ func (s *Sidecar) consumeGroupOnce(ctx context.Context, req readRequest) ([]read
 		req.BlockMS = 1000
 	}
 
-	if err := s.redis.Raw().XGroupCreateMkStream(ctx, req.Stream, req.ConsumerGroup, "0").Err(); err != nil {
-		if !strings.Contains(strings.ToUpper(err.Error()), "BUSYGROUP") {
-			s.incrementError()
-			return nil, http.StatusServiceUnavailable, errors.New("failed to ensure consumer group")
-		}
+	if err := s.ensureConsumerGroup(ctx, req.Stream, req.ConsumerGroup); err != nil {
+		s.incrementError()
+		return nil, http.StatusServiceUnavailable, errors.New("failed to ensure consumer group")
 	}
 
-	streams, err := s.redis.Raw().XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group:    req.ConsumerGroup,
-		Consumer: req.ConsumerName,
-		Streams:  []string{req.Stream, ">"},
-		Count:    req.Count,
-		Block:    time.Duration(req.BlockMS) * time.Millisecond,
-	}).Result()
-	if err != nil {
-		if err == redis.Nil {
-			return []readEvent{}, http.StatusOK, nil
+	readOnce := func() ([]redis.XStream, error) {
+		return s.redis.Raw().XReadGroup(ctx, &redis.XReadGroupArgs{
+			Group:    req.ConsumerGroup,
+			Consumer: req.ConsumerName,
+			Streams:  []string{req.Stream, ">"},
+			Count:    req.Count,
+			Block:    time.Duration(req.BlockMS) * time.Millisecond,
+		}).Result()
+	}
+
+	streams, err := readOnce()
+	if err != nil && isNoGroupError(err) {
+		s.forgetEnsuredConsumerGroup(req.Stream, req.ConsumerGroup)
+		if ensureErr := s.ensureConsumerGroup(ctx, req.Stream, req.ConsumerGroup); ensureErr == nil {
+			streams, err = readOnce()
 		}
+	}
+	if err == redis.Nil {
+		return []readEvent{}, http.StatusOK, nil
+	}
+	if err != nil {
 		s.incrementError()
 		return nil, http.StatusServiceUnavailable, errors.New("failed to read from stream")
 	}
@@ -161,6 +169,49 @@ func (s *Sidecar) ackEntriesInternal(ctx context.Context, req ackRequest) (int64
 
 	s.incrementAckedEntries(uint64(acked))
 	return acked, http.StatusOK, nil
+}
+
+func (s *Sidecar) ensureConsumerGroup(ctx context.Context, stream string, consumerGroup string) error {
+	if s.isConsumerGroupEnsured(stream, consumerGroup) {
+		return nil
+	}
+	s.incrementGroupEnsureAttempt()
+	err := s.redis.Raw().XGroupCreateMkStream(ctx, stream, consumerGroup, "0").Err()
+	if err == nil {
+		s.rememberConsumerGroup(stream, consumerGroup)
+		return nil
+	}
+	if strings.Contains(strings.ToUpper(err.Error()), "BUSYGROUP") {
+		s.rememberConsumerGroup(stream, consumerGroup)
+		return nil
+	}
+	return err
+}
+
+func (s *Sidecar) isConsumerGroupEnsured(stream string, consumerGroup string) bool {
+	key := consumerGroupKey(stream, consumerGroup)
+	s.consumerGroupMu.RLock()
+	_, ok := s.consumerGroupsEnsured[key]
+	s.consumerGroupMu.RUnlock()
+	return ok
+}
+
+func (s *Sidecar) rememberConsumerGroup(stream string, consumerGroup string) {
+	key := consumerGroupKey(stream, consumerGroup)
+	s.consumerGroupMu.Lock()
+	s.consumerGroupsEnsured[key] = struct{}{}
+	s.consumerGroupMu.Unlock()
+}
+
+func (s *Sidecar) forgetEnsuredConsumerGroup(stream string, consumerGroup string) {
+	key := consumerGroupKey(stream, consumerGroup)
+	s.consumerGroupMu.Lock()
+	delete(s.consumerGroupsEnsured, key)
+	s.consumerGroupMu.Unlock()
+}
+
+func consumerGroupKey(stream string, consumerGroup string) string {
+	return strings.TrimSpace(stream) + "|" + strings.TrimSpace(consumerGroup)
 }
 
 func normalizeRedisValue(value any) any {

@@ -23,6 +23,15 @@ Legacy module/path names remain `synapse-sidecar` for compatibility.
 - `SIDECAR_PUBLISH_STREAMS` (default: `platform-events`)
 - `SIDECAR_CONSUME_STREAMS` (default: empty = allow all streams)
 - `SIDECAR_MAX_STREAM_LEN` (default: `10000`)
+- Dispatcher consume tuning:
+- `SIDECAR_DISPATCHER_CONSUMER_NAME` (default: `sugar-glider-dispatcher`)
+- `SIDECAR_DISPATCHER_READ_COUNT` (default: `100`)
+- `SIDECAR_DISPATCHER_BLOCK_MS` (default: `1000`)
+- `SIDECAR_DISPATCHER_SUBSCRIBER_BUFFER` (default: `256`)
+- `SIDECAR_DISPATCHER_ACK_BATCH_SIZE` (default: `64`)
+- `SIDECAR_DISPATCHER_ACK_FLUSH_CONCURRENCY` (default: `2`)
+- `SIDECAR_DISPATCHER_ACK_FLUSH_MS` (default: `10`)
+- `SIDECAR_DISPATCHER_ACK_QUEUE_SIZE` (default: `4096`)
 - `SIDECAR_WAL_DIR` (default: `/data/synapse-wal`)
 - WAL filename defaults to `sugar-glider.wal.jsonl` and will reuse legacy `sidecar.wal.jsonl` if present.
 - `SIDECAR_WAL_REPLAY_BATCH` (default: `100`; set `0` to disable replay)
@@ -31,6 +40,39 @@ Legacy module/path names remain `synapse-sidecar` for compatibility.
 - `SIDECAR_DLQ_MIN_IDLE_MS` (default: `30000`)
 - `SIDECAR_DLQ_SCAN_INTERVAL_MS` (default: `5000`; set `0` to disable DLQ scanner loop)
 - `SIDECAR_READINESS_TIMEOUT_MS` (default: `1500`)
+
+## Dispatcher timing observability
+
+Dispatcher micro-timing counters are exposed in:
+
+- `GET /v1/config` under `metrics`
+- `GET /metrics` as Prometheus metrics
+
+Key fields:
+
+- `dispatcher_read_samples`
+- `dispatcher_read_duration_ms_total`
+- `dispatcher_read_duration_ms_max`
+- `dispatcher_fanout_samples`
+- `dispatcher_fanout_duration_ms_total`
+- `dispatcher_fanout_duration_ms_max`
+- `dispatcher_ack_flush_calls`
+- `dispatcher_ack_flush_chunks`
+- `dispatcher_ack_flush_duration_ms_total`
+- `dispatcher_ack_flush_duration_ms_max`
+- `dispatcher_ack_exec_samples`
+- `dispatcher_ack_exec_duration_ms_total`
+- `dispatcher_ack_exec_duration_ms_max`
+- `dispatcher_ack_queue_depth_peak`
+- `dispatcher_ack_input_entries`
+- `dispatcher_ack_deduped_entries`
+- `dispatcher_ack_duplicate_entries`
+- `dispatcher_ack_contiguous_spans`
+- `dispatcher_ack_contiguous_saved_entries`
+
+Prometheus names use the `synapse_sidecar_dispatcher_*` prefix.
+
+The ACK compression counters are measurement-only. Redis `XACK` still receives explicit entry IDs; these fields quantify duplicate IDs removed by the pending map and contiguous stream-ID spans that could justify a future range-style/lower-ACK-pressure experiment.
 
 ## Proto generation
 
