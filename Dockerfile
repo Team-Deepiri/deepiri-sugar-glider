@@ -1,7 +1,7 @@
 FROM golang:1.24-alpine AS build
 WORKDIR /src
 ARG TARGETOS=linux
-ARG TARGETARCH=arm64
+ARG TARGETARCH
 
 COPY go.mod ./
 RUN go mod download
