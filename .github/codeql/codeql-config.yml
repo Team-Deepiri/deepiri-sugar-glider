@@ -1,0 +1,15 @@
+# Exclude generated/build/runtime artifact paths.
+paths-ignore:
+  - '**/node_modules/**'
+  - '**/dist/**'
+  - '**/build/**'
+  - '**/coverage/**'
+  - '**/logs/**'
+  - '**/*.min.js'
+  - '**/proto/**'
+  - '**/scripts/**'
+  - '**/docs/**'
+  - '**/.github/**'
+  - '**/*.pb.go'
+  - '**/buf.*'
+  - '**/Dockerfile'
