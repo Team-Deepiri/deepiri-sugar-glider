@@ -12,11 +12,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/config"
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/health"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/metrics"
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/redisstreams"
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/wal"
 	synapsev1 "github.com/Team-Deepiri/deepiri-sugar-glider/proto/synapse/v1"
@@ -37,47 +37,7 @@ type Sidecar struct {
 	consumerGroupsEnsured map[string]struct{}
 	startedAt             time.Time
 	dispatcherManager     *consumeDispatcherManager
-
-	publishAttempts               uint64
-	publishSuccess                uint64
-	publishQueued                 uint64
-	publishPipelineEnqueued       uint64
-	publishPipelineFlushedBatch   uint64
-	publishPipelineFlushedEntry   uint64
-	publishPipelineFallback       uint64
-	publishPipelineAdaptiveDirect uint64
-	publishPipelineAdaptiveActive int64
-	publishPipelineError          uint64
-	readRequests                  uint64
-	readEvents                    uint64
-	ackRequests                   uint64
-	ackRPCRequests                uint64
-	ackedEntries                  uint64
-	groupEnsureAttempts           uint64
-	walReplayed                   uint64
-	walReplaySyncCalls            uint64
-	dlqMoved                      uint64
-	dispatcherDroppedSubscribers  uint64
-	dispatcherReadSamples         uint64
-	dispatcherReadDurationNS      uint64
-	dispatcherReadDurationNSMax   uint64
-	dispatcherFanOutSamples       uint64
-	dispatcherFanOutDurationNS    uint64
-	dispatcherFanOutDurationNSMax uint64
-	dispatcherAckFlushCalls       uint64
-	dispatcherAckFlushChunks      uint64
-	dispatcherAckFlushDurationNS  uint64
-	dispatcherAckFlushDurationMax uint64
-	dispatcherAckExecSamples      uint64
-	dispatcherAckExecDurationNS   uint64
-	dispatcherAckExecDurationMax  uint64
-	dispatcherAckQueueDepthPeak   uint64
-	dispatcherAckInputEntries     uint64
-	dispatcherAckDedupedEntries   uint64
-	dispatcherAckDuplicateEntries uint64
-	dispatcherAckContiguousSpans  uint64
-	dispatcherAckContiguousSaved  uint64
-	errorCount                    uint64
+	collector             *metrics.Collector
 }
 
 type metricsSnapshot struct {
@@ -129,6 +89,7 @@ type publishClient interface {
 
 type publishPipelineClient interface {
 	Publish(ctx context.Context, req redisstreams.PublishRequest) (string, error)
+	PublishMany(ctx context.Context, reqs []redisstreams.PublishRequest) ([]publishResult, error)
 	QueueLength() int
 	Close()
 }
@@ -139,7 +100,7 @@ func New(cfg config.Config) (*Sidecar, error) {
 		return nil, fmt.Errorf("redis client: %w", err)
 	}
 
-	w, err := wal.New(cfg.WALDir)
+	w, err := wal.New(cfg.WALDir, wal.Options{MaxEntries: cfg.WALMaxEntries})
 	if err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("wal init: %w", err)
@@ -152,6 +113,7 @@ func New(cfg config.Config) (*Sidecar, error) {
 		wal:                   w,
 		consumerGroupsEnsured: make(map[string]struct{}),
 		startedAt:             time.Now(),
+		collector:             metrics.New(),
 	}
 	if cfg.PublishPipelineEnabled {
 		sidecar.publishPipeline = newPublishPipeline(sidecar, publishPipelineConfig{
@@ -333,6 +295,7 @@ func (s *Sidecar) scanAndMoveToDLQ(ctx context.Context) {
 	}
 
 	for _, stream := range streams {
+		policy := s.cfg.ResolveDLQPolicy(stream)
 		groups, err := s.redis.Raw().XInfoGroups(ctx, stream).Result()
 		if err != nil {
 			if errors.Is(err, redis.Nil) || isNoSuchStreamErr(err) {
@@ -344,62 +307,75 @@ func (s *Sidecar) scanAndMoveToDLQ(ctx context.Context) {
 		}
 
 		for _, group := range groups {
-			pendingEntries, err := s.redis.Raw().XPendingExt(ctx, &redis.XPendingExtArgs{
-				Stream: stream,
-				Group:  group.Name,
-				Start:  "-",
-				End:    "+",
-				Count:  100,
-			}).Result()
-			if err != nil {
-				if strings.Contains(strings.ToLower(err.Error()), "nogroup") {
-					continue
-				}
-				s.incrementError()
-				slog.Warn("dlq scan failed to read pending", "stream", stream, "group", group.Name, "error", err)
-				continue
-			}
-
-			for _, pending := range pendingEntries {
-				if pending.RetryCount < s.cfg.DLQMaxRetries {
-					continue
-				}
-				if s.cfg.DLQMinIdle > 0 && pending.Idle < s.cfg.DLQMinIdle {
-					continue
-				}
-
-				moved, moveErr := s.movePendingEntryToDLQ(ctx, stream, group.Name, pending)
-				if moveErr != nil {
+			start := "-"
+			for {
+				pendingEntries, err := s.redis.Raw().XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream: stream,
+					Group:  group.Name,
+					Start:  start,
+					End:    "+",
+					Count:  s.cfg.DLQScanBatch,
+				}).Result()
+				if err != nil {
+					if strings.Contains(strings.ToLower(err.Error()), "nogroup") {
+						break
+					}
 					s.incrementError()
-					slog.Warn(
-						"dlq move failed",
-						"stream",
-						stream,
-						"group",
-						group.Name,
-						"entry_id",
-						pending.ID,
-						"error",
-						moveErr,
-					)
-					continue
+					slog.Warn("dlq scan failed to read pending", "stream", stream, "group", group.Name, "error", err)
+					break
 				}
-				if moved {
-					s.incrementDLQMoved()
-					slog.Warn(
-						"moved stream entry to dlq",
-						"stream",
-						stream,
-						"group",
-						group.Name,
-						"entry_id",
-						pending.ID,
-						"retry_count",
-						pending.RetryCount,
-						"idle_ms",
-						pending.Idle.Milliseconds(),
-					)
+				if len(pendingEntries) == 0 {
+					break
 				}
+
+				for _, pending := range pendingEntries {
+					if pending.RetryCount < policy.MaxRetries {
+						continue
+					}
+					if policy.MinIdle > 0 && pending.Idle < policy.MinIdle {
+						continue
+					}
+
+					moved, moveErr := s.movePendingEntryToDLQ(ctx, stream, group.Name, pending, policy.DLQStream)
+					if moveErr != nil {
+						s.incrementError()
+						slog.Warn(
+							"dlq move failed",
+							"stream",
+							stream,
+							"group",
+							group.Name,
+							"entry_id",
+							pending.ID,
+							"error",
+							moveErr,
+						)
+						continue
+					}
+					if moved {
+						s.incrementDLQMoved()
+						slog.Warn(
+							"moved stream entry to dlq",
+							"stream",
+							stream,
+							"group",
+							group.Name,
+							"dlq_stream",
+							policy.DLQStream,
+							"entry_id",
+							pending.ID,
+							"retry_count",
+							pending.RetryCount,
+							"idle_ms",
+							pending.Idle.Milliseconds(),
+						)
+					}
+				}
+
+				if int64(len(pendingEntries)) < s.cfg.DLQScanBatch {
+					break
+				}
+				start = "(" + pendingEntries[len(pendingEntries)-1].ID
 			}
 		}
 	}
@@ -410,6 +386,7 @@ func (s *Sidecar) movePendingEntryToDLQ(
 	stream string,
 	group string,
 	pending redis.XPendingExt,
+	dlqStream string,
 ) (bool, error) {
 	messages, err := s.redis.Raw().XRange(ctx, stream, pending.ID, pending.ID).Result()
 	if err != nil {
@@ -433,7 +410,6 @@ func (s *Sidecar) movePendingEntryToDLQ(
 		dlqValues[key] = value
 	}
 
-	dlqStream := stream + ":dlq"
 	if _, err := s.redis.Raw().XAdd(ctx, &redis.XAddArgs{
 		Stream: dlqStream,
 		MaxLen: s.cfg.MaxStreamLen,
@@ -505,181 +481,12 @@ func (s *Sidecar) readyz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Sidecar) metrics(w http.ResponseWriter, _ *http.Request) {
-	snapshot := s.getMetricsSnapshot()
+func (s *Sidecar) metrics(w http.ResponseWriter, r *http.Request) {
 	depth, _ := s.wal.Depth()
-	uptimeSeconds := time.Since(s.startedAt).Seconds()
-
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	w.WriteHeader(http.StatusOK)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_attempts_total Total publish attempts.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_attempts_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_attempts_total %d\n", snapshot.PublishAttempts)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_success_total Total successful publishes.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_success_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_success_total %d\n", snapshot.PublishSuccess)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_queued_total Total publishes queued in WAL.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_queued_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_queued_total %d\n", snapshot.PublishQueued)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_pipeline_enqueued_total Total publish requests enqueued into the publish pipeline.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_pipeline_enqueued_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_pipeline_enqueued_total %d\n", snapshot.PublishPipelineEnqueued)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_pipeline_flushed_batches_total Total publish pipeline flush batches.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_pipeline_flushed_batches_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_pipeline_flushed_batches_total %d\n", snapshot.PublishPipelineFlushedBatch)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_pipeline_flushed_entries_total Total publish entries flushed through pipeline.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_pipeline_flushed_entries_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_pipeline_flushed_entries_total %d\n", snapshot.PublishPipelineFlushedEntry)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_pipeline_fallback_direct_total Total publish requests that fell back to direct publish path.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_pipeline_fallback_direct_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_pipeline_fallback_direct_total %d\n", snapshot.PublishPipelineFallback)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_pipeline_adaptive_direct_total Total publish requests sent directly by adaptive publish routing.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_pipeline_adaptive_direct_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_pipeline_adaptive_direct_total %d\n", snapshot.PublishPipelineAdaptiveDirect)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_pipeline_errors_total Total publish pipeline errors.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_pipeline_errors_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_pipeline_errors_total %d\n", snapshot.PublishPipelineError)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_publish_pipeline_queue_depth Current publish pipeline queue depth.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_publish_pipeline_queue_depth gauge\n")
-	fmt.Fprintf(w, "synapse_sidecar_publish_pipeline_queue_depth %d\n", snapshot.PublishPipelineQueueDepth)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_read_requests_total Total read requests.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_read_requests_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_read_requests_total %d\n", snapshot.ReadRequests)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_read_events_total Total events returned from reads.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_read_events_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_read_events_total %d\n", snapshot.ReadEvents)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_ack_requests_total Total ack requests.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_ack_requests_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_ack_requests_total %d\n", snapshot.AckRequests)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_ack_rpc_requests_total Total gRPC ack requests.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_ack_rpc_requests_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_ack_rpc_requests_total %d\n", snapshot.AckRPCRequests)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_acked_entries_total Total acknowledged entries.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_acked_entries_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_acked_entries_total %d\n", snapshot.AckedEntries)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_group_ensure_attempts_total Total Redis consumer-group ensure attempts.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_group_ensure_attempts_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_group_ensure_attempts_total %d\n", snapshot.GroupEnsureAttempts)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_wal_replayed_total Total WAL entries replayed.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_wal_replayed_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_wal_replayed_total %d\n", snapshot.WALReplayed)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_wal_replay_sync_calls_total Total synchronous WAL replay calls from publish success path.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_wal_replay_sync_calls_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_wal_replay_sync_calls_total %d\n", snapshot.WALReplaySyncCalls)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dlq_moved_total Total entries moved to DLQ.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dlq_moved_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dlq_moved_total %d\n", snapshot.DLQMoved)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_dropped_subscribers_total Total dispatcher subscribers dropped due to full buffers.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_dropped_subscribers_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_dropped_subscribers_total %d\n", snapshot.DispatcherDroppedSubscribers)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_read_samples_total Total dispatcher read samples.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_read_samples_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_read_samples_total %d\n", snapshot.DispatcherReadSamples)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_read_duration_ms_total Total dispatcher read-loop Redis read duration in ms.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_read_duration_ms_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_read_duration_ms_total %d\n", snapshot.DispatcherReadDurationMS)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_read_duration_ms_max Max dispatcher read-loop Redis read duration in ms.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_read_duration_ms_max gauge\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_read_duration_ms_max %d\n", snapshot.DispatcherReadDurationMSMax)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_fanout_samples_total Total dispatcher fan-out samples.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_fanout_samples_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_fanout_samples_total %d\n", snapshot.DispatcherFanOutSamples)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_fanout_duration_ms_total Total dispatcher fan-out duration in ms.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_fanout_duration_ms_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_fanout_duration_ms_total %d\n", snapshot.DispatcherFanOutDurationMS)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_fanout_duration_ms_max Max dispatcher fan-out duration in ms.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_fanout_duration_ms_max gauge\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_fanout_duration_ms_max %d\n", snapshot.DispatcherFanOutDurationMSMax)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_flush_calls_total Total dispatcher ack flush invocations.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_flush_calls_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_flush_calls_total %d\n", snapshot.DispatcherAckFlushCalls)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_flush_chunks_total Total dispatcher ack chunks processed across flush calls.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_flush_chunks_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_flush_chunks_total %d\n", snapshot.DispatcherAckFlushChunks)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_flush_duration_ms_total Total dispatcher ack flush duration in ms.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_flush_duration_ms_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_flush_duration_ms_total %d\n", snapshot.DispatcherAckFlushDurationMS)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_flush_duration_ms_max Max dispatcher ack flush duration in ms.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_flush_duration_ms_max gauge\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_flush_duration_ms_max %d\n", snapshot.DispatcherAckFlushDurationMax)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_exec_samples_total Total dispatcher Redis ack pipeline exec samples.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_exec_samples_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_exec_samples_total %d\n", snapshot.DispatcherAckExecSamples)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_exec_duration_ms_total Total dispatcher Redis ack pipeline exec duration in ms.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_exec_duration_ms_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_exec_duration_ms_total %d\n", snapshot.DispatcherAckExecDurationMS)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_exec_duration_ms_max Max dispatcher Redis ack pipeline exec duration in ms.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_exec_duration_ms_max gauge\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_exec_duration_ms_max %d\n", snapshot.DispatcherAckExecDurationMax)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_queue_depth_peak Peak dispatcher ack queue depth.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_queue_depth_peak gauge\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_queue_depth_peak %d\n", snapshot.DispatcherAckQueueDepthPeak)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_input_entries_total Total dispatcher ack entry IDs received before dedupe.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_input_entries_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_input_entries_total %d\n", snapshot.DispatcherAckInputEntries)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_deduped_entries_total Total dispatcher ack entry IDs after pending-map dedupe.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_deduped_entries_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_deduped_entries_total %d\n", snapshot.DispatcherAckDedupedEntries)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_duplicate_entries_total Total dispatcher ack entry IDs removed by pending-map dedupe.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_duplicate_entries_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_duplicate_entries_total %d\n", snapshot.DispatcherAckDuplicateEntries)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_contiguous_spans_total Total contiguous Redis stream ID spans observed in ack flushes.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_contiguous_spans_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_contiguous_spans_total %d\n", snapshot.DispatcherAckContiguousSpans)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_dispatcher_ack_contiguous_saved_entries_total Total ack IDs that could be saved if Redis supported range-style XACK for observed spans.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_dispatcher_ack_contiguous_saved_entries_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_dispatcher_ack_contiguous_saved_entries_total %d\n", snapshot.DispatcherAckContiguousSaved)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_errors_total Total sugar glider operation errors.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_errors_total counter\n")
-	fmt.Fprintf(w, "synapse_sidecar_errors_total %d\n", snapshot.Errors)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_wal_depth Current WAL depth.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_wal_depth gauge\n")
-	fmt.Fprintf(w, "synapse_sidecar_wal_depth %d\n", depth)
-
-	fmt.Fprintf(w, "# HELP synapse_sidecar_uptime_seconds Sugar Glider uptime in seconds.\n")
-	fmt.Fprintf(w, "# TYPE synapse_sidecar_uptime_seconds gauge\n")
-	fmt.Fprintf(w, "synapse_sidecar_uptime_seconds %.0f\n", uptimeSeconds)
+	s.collector.SetWALDepth(depth)
+	s.collector.SetUptime(s.startedAt)
+	s.collector.SetPublishPipelineQueueDepth(s.publishPipelineQueueDepth())
+	s.collector.Handler().ServeHTTP(w, r)
 }
 
 func (s *Sidecar) publish(w http.ResponseWriter, r *http.Request) {
@@ -719,31 +526,9 @@ func (s *Sidecar) publishInternal(
 	ctx context.Context,
 	req redisstreams.PublishRequest,
 ) (entryID string, queued bool, walDepth int, statusCode int, err error) {
-	req.Stream = strings.TrimSpace(req.Stream)
-	req.EventType = strings.TrimSpace(req.EventType)
-	req.Sender = strings.TrimSpace(req.Sender)
-	req.Recipient = strings.TrimSpace(req.Recipient)
-	req.Priority = strings.TrimSpace(req.Priority)
-
-	if req.Stream == "" {
-		if len(s.cfg.PublishStreams) == 1 {
-			req.Stream = s.cfg.PublishStreams[0]
-		} else {
-			s.incrementError()
-			return "", false, 0, http.StatusBadRequest, errors.New("stream is required")
-		}
-	}
-	if !config.IsStreamAllowed(s.cfg.PublishStreams, req.Stream) {
-		s.incrementError()
-		return "", false, 0, http.StatusForbidden, errors.New("stream not allowed for this sugar glider")
-	}
-	if req.EventType == "" {
-		s.incrementError()
-		return "", false, 0, http.StatusBadRequest, errors.New("event_type is required")
-	}
-	if len(req.Payload) == 0 {
-		s.incrementError()
-		return "", false, 0, http.StatusBadRequest, errors.New("payload is required")
+	req, code, normErr := s.normalizePublishRequest(req, "")
+	if normErr != nil {
+		return "", false, 0, code, normErr
 	}
 
 	id, pubErr := s.publishToRedis(ctx, req)
@@ -756,6 +541,9 @@ func (s *Sidecar) publishInternal(
 		slog.Warn("publish failed, writing WAL", "error", pubErr, "stream", req.Stream)
 		if appendErr := s.wal.Append(pubErr.Error(), req); appendErr != nil {
 			s.incrementError()
+			if errors.Is(appendErr, wal.ErrWALFull) {
+				return "", false, 0, http.StatusServiceUnavailable, errors.New("redis unavailable and wal is full")
+			}
 			return "", false, 0, http.StatusServiceUnavailable, errors.New("redis unavailable and wal append failed")
 		}
 		s.incrementPublishQueued()
@@ -771,6 +559,84 @@ func (s *Sidecar) publishInternal(
 	return id, false, 0, http.StatusOK, nil
 }
 
+func (s *Sidecar) normalizePublishRequest(req redisstreams.PublishRequest, defaultStream string) (redisstreams.PublishRequest, int, error) {
+	req.Stream = strings.TrimSpace(req.Stream)
+	req.EventType = strings.TrimSpace(req.EventType)
+	req.Sender = strings.TrimSpace(req.Sender)
+	req.Recipient = strings.TrimSpace(req.Recipient)
+	req.Priority = strings.TrimSpace(req.Priority)
+
+	if req.Stream == "" {
+		if defaultStream != "" {
+			req.Stream = defaultStream
+		} else if len(s.cfg.PublishStreams) == 1 {
+			req.Stream = s.cfg.PublishStreams[0]
+		} else {
+			s.incrementError()
+			return req, http.StatusBadRequest, errors.New("stream is required")
+		}
+	}
+	if !config.IsStreamAllowed(s.cfg.PublishStreams, req.Stream) {
+		s.incrementError()
+		return req, http.StatusForbidden, errors.New("stream not allowed for this sugar glider")
+	}
+	if req.EventType == "" {
+		s.incrementError()
+		return req, http.StatusBadRequest, errors.New("event_type is required")
+	}
+	if len(req.Payload) == 0 {
+		s.incrementError()
+		return req, http.StatusBadRequest, errors.New("payload is required")
+	}
+	return req, http.StatusOK, nil
+}
+
+func (s *Sidecar) publishBatchToRedis(ctx context.Context, reqs []redisstreams.PublishRequest) ([]string, error) {
+	if len(reqs) == 0 {
+		return nil, nil
+	}
+	if s.publishPipeline == nil || len(reqs) == 1 {
+		entryIDs := make([]string, 0, len(reqs))
+		for _, req := range reqs {
+			id, err := s.publishToRedis(ctx, req)
+			if err != nil {
+				return entryIDs, err
+			}
+			entryIDs = append(entryIDs, id)
+		}
+		return entryIDs, nil
+	}
+
+	results, err := s.publishPipeline.PublishMany(ctx, reqs)
+	if err != nil {
+		if errors.Is(err, errPublishPipelineQueueFull) || errors.Is(err, errPublishPipelineStopped) {
+			s.incrementPublishPipelineFallback()
+			entryIDs := make([]string, 0, len(reqs))
+			for _, req := range reqs {
+				id, directErr := s.publisher.Publish(ctx, req)
+				if directErr != nil {
+					s.incrementPublishPipelineError(1)
+					return entryIDs, directErr
+				}
+				entryIDs = append(entryIDs, id)
+			}
+			return entryIDs, nil
+		}
+		s.incrementPublishPipelineError(uint64(len(reqs)))
+		return nil, err
+	}
+
+	entryIDs := make([]string, 0, len(results))
+	for _, result := range results {
+		if result.err != nil {
+			s.incrementPublishPipelineError(1)
+			return entryIDs, result.err
+		}
+		entryIDs = append(entryIDs, result.entryID)
+	}
+	return entryIDs, nil
+}
+
 func (s *Sidecar) publishToRedis(ctx context.Context, req redisstreams.PublishRequest) (string, error) {
 	if s.publishPipeline == nil {
 		return s.publisher.Publish(ctx, req)
@@ -778,8 +644,8 @@ func (s *Sidecar) publishToRedis(ctx context.Context, req redisstreams.PublishRe
 
 	adaptiveActive := int64(0)
 	if s.cfg.PublishPipelineAdaptiveEnabled {
-		adaptiveActive = atomic.AddInt64(&s.publishPipelineAdaptiveActive, 1)
-		defer atomic.AddInt64(&s.publishPipelineAdaptiveActive, -1)
+		adaptiveActive = s.collector.AddPublishPipelineAdaptiveActive(1)
+		defer s.collector.AddPublishPipelineAdaptiveActive(-1)
 	}
 
 	if s.shouldUseAdaptiveDirectPublish(adaptiveActive) {
@@ -851,136 +717,55 @@ func (s *Sidecar) currentConfig(w http.ResponseWriter, _ *http.Request) {
 		"dlq_max_retries":                   s.cfg.DLQMaxRetries,
 		"dlq_min_idle_ms":                   s.cfg.DLQMinIdle.Milliseconds(),
 		"dlq_scan_interval_ms":              s.cfg.DLQScanInterval.Milliseconds(),
+		"dlq_scan_batch":                    s.cfg.DLQScanBatch,
+		"dlq_stream_policies":               s.cfg.DLQStreamPolicies,
 		"wal_path":                          s.wal.Path(),
+		"wal_max_entries":                   s.cfg.WALMaxEntries,
 		"wal_depth":                         depth,
 		"metrics":                           s.getMetricsSnapshot(),
 	})
 }
 
-func (s *Sidecar) incrementPublishAttempts() {
-	atomic.AddUint64(&s.publishAttempts, 1)
-}
-
-func (s *Sidecar) incrementPublishSuccess() {
-	atomic.AddUint64(&s.publishSuccess, 1)
-}
-
-func (s *Sidecar) incrementPublishQueued() {
-	atomic.AddUint64(&s.publishQueued, 1)
-}
-
-func (s *Sidecar) incrementPublishPipelineEnqueued() {
-	atomic.AddUint64(&s.publishPipelineEnqueued, 1)
-}
-
-func (s *Sidecar) incrementPublishPipelineFlushedBatch() {
-	atomic.AddUint64(&s.publishPipelineFlushedBatch, 1)
-}
-
+func (s *Sidecar) incrementPublishAttempts()               { s.collector.IncPublishAttempts() }
+func (s *Sidecar) incrementPublishSuccess()                { s.collector.IncPublishSuccess() }
+func (s *Sidecar) incrementPublishQueued()                 { s.collector.IncPublishQueued() }
+func (s *Sidecar) incrementPublishPipelineEnqueued()       { s.collector.IncPublishPipelineEnqueued() }
+func (s *Sidecar) incrementPublishPipelineFlushedBatch()   { s.collector.IncPublishPipelineFlushedBatch() }
 func (s *Sidecar) incrementPublishPipelineFlushedEntries(n uint64) {
-	atomic.AddUint64(&s.publishPipelineFlushedEntry, n)
+	s.collector.IncPublishPipelineFlushedEntries(n)
 }
-
-func (s *Sidecar) incrementPublishPipelineFallback() {
-	atomic.AddUint64(&s.publishPipelineFallback, 1)
-}
-
-func (s *Sidecar) incrementPublishPipelineAdaptiveDirect() {
-	atomic.AddUint64(&s.publishPipelineAdaptiveDirect, 1)
-}
-
-func (s *Sidecar) incrementPublishPipelineError(n uint64) {
-	atomic.AddUint64(&s.publishPipelineError, n)
-}
-
-func (s *Sidecar) incrementReadRequest() {
-	atomic.AddUint64(&s.readRequests, 1)
-}
-
-func (s *Sidecar) incrementReadEvents(n uint64) {
-	atomic.AddUint64(&s.readEvents, n)
-}
-
-func (s *Sidecar) incrementAckRequest() {
-	atomic.AddUint64(&s.ackRequests, 1)
-}
-
-func (s *Sidecar) incrementAckRPCRequest() {
-	atomic.AddUint64(&s.ackRPCRequests, 1)
-}
-
-func (s *Sidecar) incrementAckedEntries(n uint64) {
-	atomic.AddUint64(&s.ackedEntries, n)
-}
-
-func (s *Sidecar) incrementGroupEnsureAttempt() {
-	atomic.AddUint64(&s.groupEnsureAttempts, 1)
-}
-
-func (s *Sidecar) incrementWALReplayed(n uint64) {
-	atomic.AddUint64(&s.walReplayed, n)
-}
-
-func (s *Sidecar) incrementWALReplaySyncCall() {
-	atomic.AddUint64(&s.walReplaySyncCalls, 1)
-}
-
-func (s *Sidecar) incrementDLQMoved() {
-	atomic.AddUint64(&s.dlqMoved, 1)
-}
-
-func (s *Sidecar) incrementDispatcherDroppedSubscribers() {
-	atomic.AddUint64(&s.dispatcherDroppedSubscribers, 1)
-}
-
+func (s *Sidecar) incrementPublishPipelineFallback()       { s.collector.IncPublishPipelineFallback() }
+func (s *Sidecar) incrementPublishPipelineAdaptiveDirect() { s.collector.IncPublishPipelineAdaptiveDirect() }
+func (s *Sidecar) incrementPublishPipelineError(n uint64)  { s.collector.IncPublishPipelineError(n) }
+func (s *Sidecar) incrementReadRequest()                   { s.collector.IncReadRequest() }
+func (s *Sidecar) incrementReadEvents(n uint64)            { s.collector.IncReadEvents(n) }
+func (s *Sidecar) incrementAckRequest()                    { s.collector.IncAckRequest() }
+func (s *Sidecar) incrementAckRPCRequest()                 { s.collector.IncAckRPCRequest() }
+func (s *Sidecar) incrementAckedEntries(n uint64)          { s.collector.IncAckedEntries(n) }
+func (s *Sidecar) incrementGroupEnsureAttempt()            { s.collector.IncGroupEnsureAttempt() }
+func (s *Sidecar) incrementWALReplayed(n uint64)           { s.collector.IncWALReplayed(n) }
+func (s *Sidecar) incrementWALReplaySyncCall()             { s.collector.IncWALReplaySyncCall() }
+func (s *Sidecar) incrementDLQMoved()                      { s.collector.IncDLQMoved() }
+func (s *Sidecar) incrementDispatcherDroppedSubscribers()  { s.collector.IncDispatcherDroppedSubscribers() }
 func (s *Sidecar) observeDispatcherReadDuration(duration time.Duration) {
-	observeDurationMillis(&s.dispatcherReadSamples, &s.dispatcherReadDurationNS, &s.dispatcherReadDurationNSMax, duration)
+	s.collector.ObserveDispatcherReadDuration(duration)
 }
-
 func (s *Sidecar) observeDispatcherFanOutDuration(duration time.Duration) {
-	observeDurationMillis(&s.dispatcherFanOutSamples, &s.dispatcherFanOutDurationNS, &s.dispatcherFanOutDurationNSMax, duration)
+	s.collector.ObserveDispatcherFanOutDuration(duration)
 }
-
 func (s *Sidecar) observeDispatcherAckFlush(duration time.Duration, chunks int) {
-	atomic.AddUint64(&s.dispatcherAckFlushCalls, 1)
-	if chunks > 0 {
-		atomic.AddUint64(&s.dispatcherAckFlushChunks, uint64(chunks))
-	}
-	observeDurationMillis(nil, &s.dispatcherAckFlushDurationNS, &s.dispatcherAckFlushDurationMax, duration)
+	s.collector.ObserveDispatcherAckFlush(duration, chunks)
 }
-
 func (s *Sidecar) observeDispatcherAckExecDuration(duration time.Duration) {
-	observeDurationMillis(&s.dispatcherAckExecSamples, &s.dispatcherAckExecDurationNS, &s.dispatcherAckExecDurationMax, duration)
+	s.collector.ObserveDispatcherAckExecDuration(duration)
 }
-
 func (s *Sidecar) observeDispatcherAckQueueDepth(depth int) {
-	if depth <= 0 {
-		return
-	}
-	atomicMaxUint64(&s.dispatcherAckQueueDepthPeak, uint64(depth))
+	s.collector.ObserveDispatcherAckQueueDepth(depth)
 }
-
-func (s *Sidecar) observeDispatcherAckCompression(inputEntries int, dedupedEntries int, contiguousSpans int, contiguousSavedEntries int) {
-	if inputEntries > 0 {
-		atomic.AddUint64(&s.dispatcherAckInputEntries, uint64(inputEntries))
-	}
-	if dedupedEntries > 0 {
-		atomic.AddUint64(&s.dispatcherAckDedupedEntries, uint64(dedupedEntries))
-	}
-	if inputEntries > dedupedEntries {
-		atomic.AddUint64(&s.dispatcherAckDuplicateEntries, uint64(inputEntries-dedupedEntries))
-	}
-	if contiguousSpans > 0 {
-		atomic.AddUint64(&s.dispatcherAckContiguousSpans, uint64(contiguousSpans))
-	}
-	if contiguousSavedEntries > 0 {
-		atomic.AddUint64(&s.dispatcherAckContiguousSaved, uint64(contiguousSavedEntries))
-	}
+func (s *Sidecar) observeDispatcherAckCompression(inputEntries, dedupedEntries, contiguousSpans, contiguousSavedEntries int) {
+	s.collector.ObserveDispatcherAckCompression(inputEntries, dedupedEntries, contiguousSpans, contiguousSavedEntries)
 }
-
-func (s *Sidecar) incrementError() {
-	atomic.AddUint64(&s.errorCount, 1)
-}
+func (s *Sidecar) incrementError() { s.collector.IncError() }
 
 func (s *Sidecar) publishPipelineQueueDepth() int64 {
 	if s.publishPipeline == nil {
@@ -990,47 +775,48 @@ func (s *Sidecar) publishPipelineQueueDepth() int64 {
 }
 
 func (s *Sidecar) getMetricsSnapshot() metricsSnapshot {
+	snapshot := s.collector.Snapshot(s.publishPipelineQueueDepth())
 	return metricsSnapshot{
-		PublishAttempts:               atomic.LoadUint64(&s.publishAttempts),
-		PublishSuccess:                atomic.LoadUint64(&s.publishSuccess),
-		PublishQueued:                 atomic.LoadUint64(&s.publishQueued),
-		PublishPipelineEnqueued:       atomic.LoadUint64(&s.publishPipelineEnqueued),
-		PublishPipelineFlushedBatch:   atomic.LoadUint64(&s.publishPipelineFlushedBatch),
-		PublishPipelineFlushedEntry:   atomic.LoadUint64(&s.publishPipelineFlushedEntry),
-		PublishPipelineFallback:       atomic.LoadUint64(&s.publishPipelineFallback),
-		PublishPipelineAdaptiveDirect: atomic.LoadUint64(&s.publishPipelineAdaptiveDirect),
-		PublishPipelineError:          atomic.LoadUint64(&s.publishPipelineError),
-		PublishPipelineQueueDepth:     s.publishPipelineQueueDepth(),
-		ReadRequests:                  atomic.LoadUint64(&s.readRequests),
-		ReadEvents:                    atomic.LoadUint64(&s.readEvents),
-		AckRequests:                   atomic.LoadUint64(&s.ackRequests),
-		AckRPCRequests:                atomic.LoadUint64(&s.ackRPCRequests),
-		AckedEntries:                  atomic.LoadUint64(&s.ackedEntries),
-		DispatcherReadSamples:         atomic.LoadUint64(&s.dispatcherReadSamples),
-		DispatcherReadDurationMS:      nsToMsUint64(atomic.LoadUint64(&s.dispatcherReadDurationNS)),
-		DispatcherReadDurationMSMax:   nsToMsUint64(atomic.LoadUint64(&s.dispatcherReadDurationNSMax)),
-		DispatcherFanOutSamples:       atomic.LoadUint64(&s.dispatcherFanOutSamples),
-		DispatcherFanOutDurationMS:    nsToMsUint64(atomic.LoadUint64(&s.dispatcherFanOutDurationNS)),
-		DispatcherFanOutDurationMSMax: nsToMsUint64(atomic.LoadUint64(&s.dispatcherFanOutDurationNSMax)),
-		DispatcherAckFlushCalls:       atomic.LoadUint64(&s.dispatcherAckFlushCalls),
-		DispatcherAckFlushChunks:      atomic.LoadUint64(&s.dispatcherAckFlushChunks),
-		DispatcherAckFlushDurationMS:  nsToMsUint64(atomic.LoadUint64(&s.dispatcherAckFlushDurationNS)),
-		DispatcherAckFlushDurationMax: nsToMsUint64(atomic.LoadUint64(&s.dispatcherAckFlushDurationMax)),
-		DispatcherAckExecSamples:      atomic.LoadUint64(&s.dispatcherAckExecSamples),
-		DispatcherAckExecDurationMS:   nsToMsUint64(atomic.LoadUint64(&s.dispatcherAckExecDurationNS)),
-		DispatcherAckExecDurationMax:  nsToMsUint64(atomic.LoadUint64(&s.dispatcherAckExecDurationMax)),
-		DispatcherAckQueueDepthPeak:   atomic.LoadUint64(&s.dispatcherAckQueueDepthPeak),
-		DispatcherAckInputEntries:     atomic.LoadUint64(&s.dispatcherAckInputEntries),
-		DispatcherAckDedupedEntries:   atomic.LoadUint64(&s.dispatcherAckDedupedEntries),
-		DispatcherAckDuplicateEntries: atomic.LoadUint64(&s.dispatcherAckDuplicateEntries),
-		DispatcherAckContiguousSpans:  atomic.LoadUint64(&s.dispatcherAckContiguousSpans),
-		DispatcherAckContiguousSaved:  atomic.LoadUint64(&s.dispatcherAckContiguousSaved),
-		GroupEnsureAttempts:           atomic.LoadUint64(&s.groupEnsureAttempts),
-		WALReplayed:                   atomic.LoadUint64(&s.walReplayed),
-		WALReplaySyncCalls:            atomic.LoadUint64(&s.walReplaySyncCalls),
-		DLQMoved:                      atomic.LoadUint64(&s.dlqMoved),
-		DispatcherDroppedSubscribers:  atomic.LoadUint64(&s.dispatcherDroppedSubscribers),
-		Errors:                        atomic.LoadUint64(&s.errorCount),
+		PublishAttempts:               snapshot.PublishAttempts,
+		PublishSuccess:                snapshot.PublishSuccess,
+		PublishQueued:                 snapshot.PublishQueued,
+		PublishPipelineEnqueued:       snapshot.PublishPipelineEnqueued,
+		PublishPipelineFlushedBatch:   snapshot.PublishPipelineFlushedBatch,
+		PublishPipelineFlushedEntry:   snapshot.PublishPipelineFlushedEntry,
+		PublishPipelineFallback:       snapshot.PublishPipelineFallback,
+		PublishPipelineAdaptiveDirect: snapshot.PublishPipelineAdaptiveDirect,
+		PublishPipelineError:          snapshot.PublishPipelineError,
+		PublishPipelineQueueDepth:     snapshot.PublishPipelineQueueDepth,
+		ReadRequests:                  snapshot.ReadRequests,
+		ReadEvents:                    snapshot.ReadEvents,
+		AckRequests:                   snapshot.AckRequests,
+		AckRPCRequests:                snapshot.AckRPCRequests,
+		AckedEntries:                  snapshot.AckedEntries,
+		DispatcherReadSamples:         snapshot.DispatcherReadSamples,
+		DispatcherReadDurationMS:      snapshot.DispatcherReadDurationMS,
+		DispatcherReadDurationMSMax:   snapshot.DispatcherReadDurationMSMax,
+		DispatcherFanOutSamples:       snapshot.DispatcherFanOutSamples,
+		DispatcherFanOutDurationMS:    snapshot.DispatcherFanOutDurationMS,
+		DispatcherFanOutDurationMSMax: snapshot.DispatcherFanOutDurationMSMax,
+		DispatcherAckFlushCalls:       snapshot.DispatcherAckFlushCalls,
+		DispatcherAckFlushChunks:      snapshot.DispatcherAckFlushChunks,
+		DispatcherAckFlushDurationMS:  snapshot.DispatcherAckFlushDurationMS,
+		DispatcherAckFlushDurationMax: snapshot.DispatcherAckFlushDurationMax,
+		DispatcherAckExecSamples:      snapshot.DispatcherAckExecSamples,
+		DispatcherAckExecDurationMS:   snapshot.DispatcherAckExecDurationMS,
+		DispatcherAckExecDurationMax:  snapshot.DispatcherAckExecDurationMax,
+		DispatcherAckQueueDepthPeak:   snapshot.DispatcherAckQueueDepthPeak,
+		DispatcherAckInputEntries:     snapshot.DispatcherAckInputEntries,
+		DispatcherAckDedupedEntries:   snapshot.DispatcherAckDedupedEntries,
+		DispatcherAckDuplicateEntries: snapshot.DispatcherAckDuplicateEntries,
+		DispatcherAckContiguousSpans:  snapshot.DispatcherAckContiguousSpans,
+		DispatcherAckContiguousSaved:  snapshot.DispatcherAckContiguousSaved,
+		GroupEnsureAttempts:           snapshot.GroupEnsureAttempts,
+		WALReplayed:                   snapshot.WALReplayed,
+		WALReplaySyncCalls:            snapshot.WALReplaySyncCalls,
+		DLQMoved:                      snapshot.DLQMoved,
+		DispatcherDroppedSubscribers:  snapshot.DispatcherDroppedSubscribers,
+		Errors:                        snapshot.Errors,
 	}
 }
 
@@ -1040,30 +826,3 @@ func writeJSON(w http.ResponseWriter, status int, payload map[string]any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func observeDurationMillis(samples *uint64, totalNS *uint64, maxNS *uint64, duration time.Duration) {
-	if duration <= 0 {
-		return
-	}
-	ns := uint64(duration.Nanoseconds())
-	if samples != nil {
-		atomic.AddUint64(samples, 1)
-	}
-	atomic.AddUint64(totalNS, ns)
-	atomicMaxUint64(maxNS, ns)
-}
-
-func atomicMaxUint64(target *uint64, candidate uint64) {
-	for {
-		current := atomic.LoadUint64(target)
-		if candidate <= current {
-			return
-		}
-		if atomic.CompareAndSwapUint64(target, current, candidate) {
-			return
-		}
-	}
-}
-
-func nsToMsUint64(value uint64) uint64 {
-	return value / uint64(time.Millisecond)
-}

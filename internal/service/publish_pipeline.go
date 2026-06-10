@@ -68,6 +68,54 @@ type publishPipelineConfig struct {
 	queueSize     int
 }
 
+func (p *publishPipeline) PublishMany(ctx context.Context, reqs []redisstreams.PublishRequest) ([]publishResult, error) {
+	if len(reqs) == 0 {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	jobs := make([]*publishJob, len(reqs))
+	for i, req := range reqs {
+		jobs[i] = &publishJob{
+			ctx:            ctx,
+			req:            req,
+			resultCh:       make(chan publishResult, 1),
+			estimatedBytes: estimatePublishRequestBytes(req),
+		}
+	}
+
+	for _, job := range jobs {
+		select {
+		case <-p.doneCh:
+			return nil, errPublishPipelineStopped
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case p.queue <- job:
+			p.sidecar.incrementPublishPipelineEnqueued()
+		default:
+			return nil, errPublishPipelineQueueFull
+		}
+	}
+
+	results := make([]publishResult, len(jobs))
+	for i, job := range jobs {
+		select {
+		case results[i] = <-job.resultCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-p.doneCh:
+			select {
+			case results[i] = <-job.resultCh:
+			default:
+				return nil, errPublishPipelineStopped
+			}
+		}
+	}
+	return results, nil
+}
+
 func (p *publishPipeline) Publish(ctx context.Context, req redisstreams.PublishRequest) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()

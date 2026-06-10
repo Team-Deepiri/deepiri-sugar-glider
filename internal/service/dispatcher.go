@@ -17,6 +17,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	dispatcherBackpressureThreshold = 0.9
+	dispatcherMaxConsecutiveDrops   = 8
+	dispatcherBackpressurePause     = 25 * time.Millisecond
+)
+
 var (
 	errDispatcherNotFound   = errors.New("dispatcher not found for stream/group")
 	errDispatcherClosed     = errors.New("dispatcher is closed")
@@ -163,6 +169,7 @@ type streamDispatcher struct {
 
 	subscribersMu sync.RWMutex
 	subscribers   map[uint64]chan *synapsev1.Event
+	dropCounts    map[uint64]int
 	nextSubID     uint64
 }
 
@@ -193,6 +200,7 @@ func newStreamDispatcher(
 		ctx:                 ctx,
 		cancel:              cancel,
 		subscribers:         make(map[uint64]chan *synapsev1.Event),
+		dropCounts:          make(map[uint64]int),
 	}
 }
 
@@ -210,6 +218,7 @@ func (d *streamDispatcher) stop() {
 		for id, ch := range d.subscribers {
 			close(ch)
 			delete(d.subscribers, id)
+			delete(d.dropCounts, id)
 		}
 		d.subscribersMu.Unlock()
 	})
@@ -221,6 +230,7 @@ func (d *streamDispatcher) subscribe() *dispatcherSubscription {
 
 	d.subscribersMu.Lock()
 	d.subscribers[subID] = ch
+	d.dropCounts[subID] = 0
 	d.subscribersMu.Unlock()
 
 	return &dispatcherSubscription{
@@ -235,6 +245,7 @@ func (d *streamDispatcher) removeSubscriber(subID uint64) {
 	ch, ok := d.subscribers[subID]
 	if ok {
 		delete(d.subscribers, subID)
+		delete(d.dropCounts, subID)
 		close(ch)
 	}
 	remaining := len(d.subscribers)
@@ -285,6 +296,15 @@ func (d *streamDispatcher) runReadLoop() {
 			case <-d.ctx.Done():
 				return
 			case <-time.After(100 * time.Millisecond):
+			}
+			continue
+		}
+
+		if d.subscribersBackpressured() {
+			select {
+			case <-d.ctx.Done():
+				return
+			case <-time.After(dispatcherBackpressurePause):
 			}
 			continue
 		}
@@ -443,24 +463,46 @@ func (d *streamDispatcher) runAckLoop() {
 	}
 }
 
-func (d *streamDispatcher) fanOut(events []*synapsev1.Event) {
-	dropped := make(map[uint64]struct{})
+func (d *streamDispatcher) subscribersBackpressured() bool {
+	threshold := int(float64(d.subscriberBuffer) * dispatcherBackpressureThreshold)
+	if threshold <= 0 {
+		threshold = 1
+	}
+
 	d.subscribersMu.RLock()
+	defer d.subscribersMu.RUnlock()
+	for _, ch := range d.subscribers {
+		if len(ch) >= threshold {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *streamDispatcher) fanOut(events []*synapsev1.Event) {
+	removeSubscribers := make([]uint64, 0)
+	d.subscribersMu.Lock()
+	defer d.subscribersMu.Unlock()
+
 	for _, event := range events {
 		for subID, ch := range d.subscribers {
-			if _, alreadyDropped := dropped[subID]; alreadyDropped {
-				continue
-			}
 			select {
 			case ch <- event:
+				d.dropCounts[subID] = 0
 			default:
-				dropped[subID] = struct{}{}
+				d.dropCounts[subID]++
+				if d.dropCounts[subID] >= dispatcherMaxConsecutiveDrops {
+					removeSubscribers = append(removeSubscribers, subID)
+				}
 			}
 		}
 	}
-	d.subscribersMu.RUnlock()
 
-	for subID := range dropped {
+	for _, subID := range removeSubscribers {
+		ch, ok := d.subscribers[subID]
+		if !ok {
+			continue
+		}
 		slog.Warn(
 			"dispatcher subscriber buffer full; removing subscriber",
 			"stream",
@@ -469,10 +511,14 @@ func (d *streamDispatcher) fanOut(events []*synapsev1.Event) {
 			d.consumerGroup,
 			"subscriber_id",
 			subID,
+			"consecutive_drops",
+			d.dropCounts[subID],
 		)
 		d.sidecar.incrementError()
 		d.sidecar.incrementDispatcherDroppedSubscribers()
-		d.removeSubscriber(subID)
+		delete(d.subscribers, subID)
+		delete(d.dropCounts, subID)
+		close(ch)
 	}
 }
 

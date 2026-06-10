@@ -7,9 +7,14 @@ import (
 	"testing"
 
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/config"
+	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/metrics"
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/redisstreams"
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/wal"
 )
+
+func testSidecar() *Sidecar {
+	return &Sidecar{collector: metrics.New()}
+}
 
 type fakePublishClient struct {
 	entryID string
@@ -34,6 +39,15 @@ func (f *fakePipelineClient) Publish(_ context.Context, _ redisstreams.PublishRe
 	return f.entryID, f.err
 }
 
+func (f *fakePipelineClient) PublishMany(_ context.Context, reqs []redisstreams.PublishRequest) ([]publishResult, error) {
+	results := make([]publishResult, len(reqs))
+	for i := range reqs {
+		f.calls++
+		results[i] = publishResult{entryID: f.entryID, err: f.err}
+	}
+	return results, nil
+}
+
 func (f *fakePipelineClient) QueueLength() int {
 	return f.queueDepth
 }
@@ -44,7 +58,8 @@ func TestPublishToRedis_DirectPathWhenPipelineDisabled(t *testing.T) {
 	t.Parallel()
 
 	direct := &fakePublishClient{entryID: "1-0"}
-	sidecar := &Sidecar{publisher: direct}
+	sidecar := testSidecar()
+	sidecar.publisher = direct
 
 	entryID, err := sidecar.publishToRedis(context.Background(), validPublishRequest())
 	if err != nil {
@@ -63,14 +78,13 @@ func TestPublishToRedis_AdaptiveDirectPathBelowMinBatch(t *testing.T) {
 
 	direct := &fakePublishClient{entryID: "direct-0"}
 	pipeline := &fakePipelineClient{entryID: "pipeline-0", queueDepth: 0}
-	sidecar := &Sidecar{
-		cfg: config.Config{
-			PublishPipelineAdaptiveEnabled: true,
-			PublishPipelineMinBatch:        2,
-		},
-		publisher:       direct,
-		publishPipeline: pipeline,
+	sidecar := testSidecar()
+	sidecar.cfg = config.Config{
+		PublishPipelineAdaptiveEnabled: true,
+		PublishPipelineMinBatch:        2,
 	}
+	sidecar.publisher = direct
+	sidecar.publishPipeline = pipeline
 
 	entryID, err := sidecar.publishToRedis(context.Background(), validPublishRequest())
 	if err != nil {
@@ -97,14 +111,13 @@ func TestPublishToRedis_AdaptiveUsesPipelineAtMinBatch(t *testing.T) {
 
 	direct := &fakePublishClient{entryID: "direct-0"}
 	pipeline := &fakePipelineClient{entryID: "pipeline-0", queueDepth: 1}
-	sidecar := &Sidecar{
-		cfg: config.Config{
-			PublishPipelineAdaptiveEnabled: true,
-			PublishPipelineMinBatch:        2,
-		},
-		publisher:       direct,
-		publishPipeline: pipeline,
+	sidecar := testSidecar()
+	sidecar.cfg = config.Config{
+		PublishPipelineAdaptiveEnabled: true,
+		PublishPipelineMinBatch:        2,
 	}
+	sidecar.publisher = direct
+	sidecar.publishPipeline = pipeline
 
 	entryID, err := sidecar.publishToRedis(context.Background(), validPublishRequest())
 	if err != nil {
@@ -131,15 +144,14 @@ func TestPublishToRedis_AdaptiveUsesPipelineAtActiveMinBatch(t *testing.T) {
 
 	direct := &fakePublishClient{entryID: "direct-0"}
 	pipeline := &fakePipelineClient{entryID: "pipeline-0", queueDepth: 0}
-	sidecar := &Sidecar{
-		cfg: config.Config{
-			PublishPipelineAdaptiveEnabled: true,
-			PublishPipelineMinBatch:        2,
-		},
-		publisher:                     direct,
-		publishPipeline:               pipeline,
-		publishPipelineAdaptiveActive: 1,
+	sidecar := testSidecar()
+	sidecar.cfg = config.Config{
+		PublishPipelineAdaptiveEnabled: true,
+		PublishPipelineMinBatch:        2,
 	}
+	sidecar.publisher = direct
+	sidecar.publishPipeline = pipeline
+	sidecar.collector.AddPublishPipelineAdaptiveActive(1)
 
 	entryID, err := sidecar.publishToRedis(context.Background(), validPublishRequest())
 	if err != nil {
@@ -166,10 +178,9 @@ func TestPublishToRedis_FallbackToDirectOnQueueFull(t *testing.T) {
 
 	direct := &fakePublishClient{entryID: "2-0"}
 	pipeline := &fakePipelineClient{err: errPublishPipelineQueueFull}
-	sidecar := &Sidecar{
-		publisher:       direct,
-		publishPipeline: pipeline,
-	}
+	sidecar := testSidecar()
+	sidecar.publisher = direct
+	sidecar.publishPipeline = pipeline
 
 	entryID, err := sidecar.publishToRedis(context.Background(), validPublishRequest())
 	if err != nil {
@@ -199,10 +210,9 @@ func TestPublishToRedis_FallbackFailureIncrementsPipelineErrors(t *testing.T) {
 
 	direct := &fakePublishClient{err: errors.New("direct publish failed")}
 	pipeline := &fakePipelineClient{err: errPublishPipelineStopped}
-	sidecar := &Sidecar{
-		publisher:       direct,
-		publishPipeline: pipeline,
-	}
+	sidecar := testSidecar()
+	sidecar.publisher = direct
+	sidecar.publishPipeline = pipeline
 
 	_, err := sidecar.publishToRedis(context.Background(), validPublishRequest())
 	if err == nil {
@@ -226,10 +236,9 @@ func TestPublishToRedis_PipelineErrorSkipsDirectPublish(t *testing.T) {
 
 	direct := &fakePublishClient{entryID: "3-0"}
 	pipeline := &fakePipelineClient{err: errors.New("pipeline flush failed")}
-	sidecar := &Sidecar{
-		publisher:       direct,
-		publishPipeline: pipeline,
-	}
+	sidecar := testSidecar()
+	sidecar.publisher = direct
+	sidecar.publishPipeline = pipeline
 
 	_, err := sidecar.publishToRedis(context.Background(), validPublishRequest())
 	if err == nil {
@@ -252,14 +261,13 @@ func TestPublishInternal_ContextCanceledSkipsWALQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wal.New() error = %v", err)
 	}
-	sidecar := &Sidecar{
-		cfg: config.Config{
-			PublishStreams: []string{"platform-events"},
-			WALReplayMode:  config.WALReplayModeBackground,
-		},
-		publisher: &fakePublishClient{err: context.Canceled},
-		wal:       w,
+	sidecar := testSidecar()
+	sidecar.cfg = config.Config{
+		PublishStreams: []string{"platform-events"},
+		WALReplayMode:  config.WALReplayModeBackground,
 	}
+	sidecar.publisher = &fakePublishClient{err: context.Canceled}
+	sidecar.wal = w
 
 	_, queued, walDepth, statusCode, publishErr := sidecar.publishInternal(context.Background(), validPublishRequest())
 	if !errors.Is(publishErr, context.Canceled) {
@@ -291,14 +299,13 @@ func TestPublishInternal_PublishFailureQueuesToWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wal.New() error = %v", err)
 	}
-	sidecar := &Sidecar{
-		cfg: config.Config{
-			PublishStreams: []string{"platform-events"},
-			WALReplayMode:  config.WALReplayModeBackground,
-		},
-		publisher: &fakePublishClient{err: errors.New("redis down")},
-		wal:       w,
+	sidecar := testSidecar()
+	sidecar.cfg = config.Config{
+		PublishStreams: []string{"platform-events"},
+		WALReplayMode:  config.WALReplayModeBackground,
 	}
+	sidecar.publisher = &fakePublishClient{err: errors.New("redis down")}
+	sidecar.wal = w
 
 	_, queued, walDepth, statusCode, publishErr := sidecar.publishInternal(context.Background(), validPublishRequest())
 	if publishErr != nil {

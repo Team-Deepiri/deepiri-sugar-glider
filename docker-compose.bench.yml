@@ -1,0 +1,49 @@
+name: sugar-glider-bench
+
+services:
+  redis:
+    image: redis:7.2-alpine
+    container_name: sugar-glider-bench-redis
+    command: redis-server --requirepass redispassword
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redispassword", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  sugar-glider:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sugar-glider-bench
+    environment:
+      SIDECAR_SERVICE_NAME: benchmark
+      SIDECAR_REDIS_URL: redis://:redispassword@redis:6379/0
+      SIDECAR_LISTEN_ADDR: tcp://0.0.0.0:8081
+      SIDECAR_GRPC_ADDR: tcp://0.0.0.0:50051
+      SIDECAR_CONSUME_MODE: dispatcher
+      SIDECAR_PUBLISH_PIPELINE_ENABLED: "true"
+      SIDECAR_PUBLISH_PIPELINE_ADAPTIVE_ENABLED: "true"
+      SIDECAR_PUBLISH_PIPELINE_MAX_BATCH: "64"
+      SIDECAR_PUBLISH_PIPELINE_MIN_BATCH: "2"
+      SIDECAR_PUBLISH_PIPELINE_FLUSH_MS: "2"
+      SIDECAR_PUBLISH_PIPELINE_QUEUE_SIZE: "8192"
+      SIDECAR_DISPATCHER_READ_COUNT: "512"
+      SIDECAR_DISPATCHER_BLOCK_MS: "200"
+      SIDECAR_DISPATCHER_SUBSCRIBER_BUFFER: "1024"
+      SIDECAR_DISPATCHER_ACK_BATCH_SIZE: "256"
+      SIDECAR_DISPATCHER_ACK_FLUSH_CONCURRENCY: "8"
+      SIDECAR_DISPATCHER_ACK_FLUSH_MS: "6"
+      SIDECAR_DISPATCHER_ACK_QUEUE_SIZE: "16384"
+      SIDECAR_PUBLISH_STREAMS: platform-events
+      SIDECAR_CONSUME_STREAMS: platform-events
+      SIDECAR_WAL_DIR: /data/wal
+      SIDECAR_WAL_MAX_ENTRIES: "100000"
+    ports:
+      - "18081:8081"
+      - "15051:50051"
+    depends_on:
+      redis:
+        condition: service_healthy
