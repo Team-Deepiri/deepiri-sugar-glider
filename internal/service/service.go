@@ -24,6 +24,22 @@ import (
 	"google.golang.org/grpc"
 )
 
+const defaultPublishRedisTimeout = 3 * time.Second
+
+func shouldSkipWALForPublishError(callerCtx context.Context, pubErr error) bool {
+	if errors.Is(pubErr, context.Canceled) {
+		return true
+	}
+	if callerCtx.Err() != nil && errors.Is(pubErr, context.DeadlineExceeded) {
+		return true
+	}
+	return false
+}
+
+func (s *Sidecar) publishRedisContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), defaultPublishRedisTimeout)
+}
+
 type Sidecar struct {
 	synapsev1.UnimplementedSynapseSidecarServer
 
@@ -531,9 +547,12 @@ func (s *Sidecar) publishInternal(
 		return "", false, 0, code, normErr
 	}
 
-	id, pubErr := s.publishToRedis(ctx, req)
+	pubCtx, cancel := s.publishRedisContext(ctx)
+	defer cancel()
+
+	id, pubErr := s.publishToRedis(pubCtx, req)
 	if pubErr != nil {
-		if errors.Is(pubErr, context.Canceled) || errors.Is(pubErr, context.DeadlineExceeded) {
+		if shouldSkipWALForPublishError(ctx, pubErr) {
 			s.incrementError()
 			return "", false, 0, http.StatusGatewayTimeout, pubErr
 		}

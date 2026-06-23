@@ -87,13 +87,16 @@ func (s *Sidecar) PublishBatch(ctx context.Context, req *synapsev1.PublishBatchR
 		s.incrementPublishAttempts()
 	}
 
-	entryIDs, pubErr := s.publishBatchToRedis(ctx, normalized)
+	pubCtx, cancel := s.publishRedisContext(ctx)
+	defer cancel()
+
+	entryIDs, pubErr := s.publishBatchToRedis(pubCtx, normalized)
 	if pubErr != nil {
 		if len(entryIDs) > 0 {
 			s.incrementError()
 			return nil, status.Error(codes.Unavailable, pubErr.Error())
 		}
-		if errors.Is(pubErr, context.Canceled) || errors.Is(pubErr, context.DeadlineExceeded) {
+		if shouldSkipWALForPublishError(ctx, pubErr) {
 			s.incrementError()
 			return nil, grpcStatusFromHTTPStatus(http.StatusGatewayTimeout, pubErr.Error())
 		}

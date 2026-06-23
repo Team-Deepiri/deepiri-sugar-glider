@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/config"
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/metrics"
@@ -305,6 +307,107 @@ func TestPublishInternal_PublishFailureQueuesToWAL(t *testing.T) {
 		WALReplayMode:  config.WALReplayModeBackground,
 	}
 	sidecar.publisher = &fakePublishClient{err: errors.New("redis down")}
+	sidecar.wal = w
+
+	_, queued, walDepth, statusCode, publishErr := sidecar.publishInternal(context.Background(), validPublishRequest())
+	if publishErr != nil {
+		t.Fatalf("publishInternal() error = %v, want nil", publishErr)
+	}
+	if !queued {
+		t.Fatalf("publishInternal() queued = false, want true")
+	}
+	if walDepth != 1 {
+		t.Fatalf("publishInternal() walDepth = %d, want 1", walDepth)
+	}
+	if statusCode != http.StatusServiceUnavailable {
+		t.Fatalf("publishInternal() statusCode = %d, want %d", statusCode, http.StatusServiceUnavailable)
+	}
+}
+
+func TestPublishInternal_RedisDeadlineExceededQueuesWAL(t *testing.T) {
+	t.Parallel()
+
+	w, err := wal.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("wal.New() error = %v", err)
+	}
+	sidecar := testSidecar()
+	sidecar.cfg = config.Config{
+		PublishStreams: []string{"platform-events"},
+		WALReplayMode:  config.WALReplayModeBackground,
+	}
+	sidecar.publisher = &fakePublishClient{err: context.DeadlineExceeded}
+	sidecar.wal = w
+
+	_, queued, walDepth, statusCode, publishErr := sidecar.publishInternal(context.Background(), validPublishRequest())
+	if publishErr != nil {
+		t.Fatalf("publishInternal() error = %v, want nil", publishErr)
+	}
+	if !queued {
+		t.Fatalf("publishInternal() queued = false, want true")
+	}
+	if walDepth != 1 {
+		t.Fatalf("publishInternal() walDepth = %d, want 1", walDepth)
+	}
+	if statusCode != http.StatusServiceUnavailable {
+		t.Fatalf("publishInternal() statusCode = %d, want %d", statusCode, http.StatusServiceUnavailable)
+	}
+}
+
+func TestPublishInternal_CallerDeadlineExceededSkipsWAL(t *testing.T) {
+	t.Parallel()
+
+	w, err := wal.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("wal.New() error = %v", err)
+	}
+	sidecar := testSidecar()
+	sidecar.cfg = config.Config{
+		PublishStreams: []string{"platform-events"},
+		WALReplayMode:  config.WALReplayModeBackground,
+	}
+	sidecar.publisher = &fakePublishClient{err: context.DeadlineExceeded}
+	sidecar.wal = w
+
+	callerCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, queued, walDepth, statusCode, publishErr := sidecar.publishInternal(callerCtx, validPublishRequest())
+	if !errors.Is(publishErr, context.DeadlineExceeded) {
+		t.Fatalf("publishInternal() error = %v, want context.DeadlineExceeded", publishErr)
+	}
+	if queued {
+		t.Fatalf("publishInternal() queued = true, want false")
+	}
+	if walDepth != 0 {
+		t.Fatalf("publishInternal() walDepth = %d, want 0", walDepth)
+	}
+	if statusCode != http.StatusGatewayTimeout {
+		t.Fatalf("publishInternal() statusCode = %d, want %d", statusCode, http.StatusGatewayTimeout)
+	}
+
+	depth, depthErr := sidecar.wal.Depth()
+	if depthErr != nil {
+		t.Fatalf("wal.Depth() error = %v", depthErr)
+	}
+	if depth != 0 {
+		t.Fatalf("wal.Depth() = %d, want 0", depth)
+	}
+}
+
+func TestPublishInternal_DialErrorQueuesWAL(t *testing.T) {
+	t.Parallel()
+
+	w, err := wal.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("wal.New() error = %v", err)
+	}
+	sidecar := testSidecar()
+	sidecar.cfg = config.Config{
+		PublishStreams: []string{"platform-events"},
+		WALReplayMode:  config.WALReplayModeBackground,
+	}
+	sidecar.publisher = &fakePublishClient{err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("lookup redis: i/o timeout")}}
 	sidecar.wal = w
 
 	_, queued, walDepth, statusCode, publishErr := sidecar.publishInternal(context.Background(), validPublishRequest())
