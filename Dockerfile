@@ -1,6 +1,6 @@
 FROM golang:1.24-alpine AS build
 WORKDIR /src
-ARG TARGETOS=linux
+ARG TARGETOS
 ARG TARGETARCH
 
 COPY go.mod ./
