@@ -37,7 +37,7 @@ curl -sf "${HTTP_URL}/healthz" >/dev/null
 BEFORE="$(curl -s "${HTTP_URL}/metrics" | grep '^synapse_sidecar_dispatcher_dropped_subscribers_total ' | awk '{print $2}' || echo 0)"
 
 echo "==> slow gRPC subscriber (no Recv)"
-go run "${ROOT}/scripts/grpc_slow_subscriber.go" --addr "${GRPC_ADDR}" &
+go run "${ROOT}/scripts/grpc_slow_subscriber" --addr "${GRPC_ADDR}" &
 SUB_PID=$!
 sleep 2
 

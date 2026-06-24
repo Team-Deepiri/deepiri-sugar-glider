@@ -1,5 +1,5 @@
 // One-off smoke: gRPC PublishBatch (N events) + Subscribe + Ack.
-// Usage: go run ./scripts/grpc_batch_smoke.go [--addr localhost:15051] [--n 10]
+// Usage: go run ./scripts/grpc_batch_smoke [--addr localhost:15051] [--n 10]
 package main
 
 import (

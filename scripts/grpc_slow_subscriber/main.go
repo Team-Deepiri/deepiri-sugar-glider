@@ -1,5 +1,5 @@
 // Blocks a gRPC Subscribe stream without calling Recv (slow consumer).
-// Usage: go run ./scripts/grpc_slow_subscriber.go [--addr localhost:15051]
+// Usage: go run ./scripts/grpc_slow_subscriber [--addr localhost:15051]
 package main
 
 import (
