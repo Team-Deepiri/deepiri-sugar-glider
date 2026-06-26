@@ -138,5 +138,6 @@ func setBaselineEnv(t *testing.T) {
 	t.Setenv("SIDECAR_DLQ_MAX_RETRIES", "3")
 	t.Setenv("SIDECAR_DLQ_MIN_IDLE_MS", "30000")
 	t.Setenv("SIDECAR_DLQ_SCAN_INTERVAL_MS", "5000")
+	t.Setenv("SIDECAR_DLQ_SCAN_BATCH", "100")
 	t.Setenv("SIDECAR_READINESS_TIMEOUT_MS", "1500")
 }

@@ -10,10 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/redisstreams"
 )
+
+var ErrWALFull = errors.New("wal entry limit reached")
 
 type Entry struct {
 	Time    string                      `json:"time"`
@@ -22,8 +25,10 @@ type Entry struct {
 }
 
 type Log struct {
-	path string
-	mu   sync.Mutex
+	path       string
+	mu         sync.Mutex
+	depth      atomic.Int64
+	maxEntries int64
 }
 
 const (
@@ -31,7 +36,11 @@ const (
 	legacyWALFilename      = "sidecar.wal.jsonl"
 )
 
-func New(dir string) (*Log, error) {
+type Options struct {
+	MaxEntries int64
+}
+
+func New(dir string, opts ...Options) (*Log, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create wal dir: %w", err)
 	}
@@ -39,7 +48,19 @@ func New(dir string) (*Log, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve wal path: %w", err)
 	}
-	return &Log{path: path}, nil
+
+	log := &Log{path: path}
+	if len(opts) > 0 {
+		log.maxEntries = opts[0].MaxEntries
+	}
+
+	depth, err := countFileLines(path)
+	if err != nil {
+		return nil, fmt.Errorf("count wal depth: %w", err)
+	}
+	log.depth.Store(int64(depth))
+
+	return log, nil
 }
 
 func resolveWALPath(dir string) (string, error) {
@@ -64,6 +85,10 @@ func (l *Log) Append(reason string, req redisstreams.PublishRequest) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.maxEntries > 0 && l.depth.Load() >= l.maxEntries {
+		return ErrWALFull
+	}
+
 	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -71,31 +96,20 @@ func (l *Log) Append(reason string, req redisstreams.PublishRequest) error {
 	defer f.Close()
 
 	enc := json.NewEncoder(f)
-	return enc.Encode(Entry{
+	if err := enc.Encode(Entry{
 		Time:    time.Now().UTC().Format(time.RFC3339Nano),
 		Reason:  reason,
 		Request: req,
-	})
+	}); err != nil {
+		return err
+	}
+
+	l.depth.Add(1)
+	return nil
 }
 
 func (l *Log) Depth() (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_RDONLY, 0o644)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	s := bufio.NewScanner(f)
-	count := 0
-	for s.Scan() {
-		if s.Text() != "" {
-			count++
-		}
-	}
-	return count, s.Err()
+	return int(l.depth.Load()), nil
 }
 
 func (l *Log) Path() string {
@@ -125,28 +139,27 @@ func (l *Log) Replay(
 	}
 	defer f.Close()
 
-	lines := make([]string, 0)
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, err
-	}
-	if len(lines) == 0 {
-		return 0, nil
-	}
 
 	replayed := 0
-	remaining := make([]string, 0, len(lines))
+	remaining := make([]string, 0, 64)
+	processing := true
 
-	for idx, line := range lines {
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		if !processing {
+			remaining = append(remaining, line)
+			continue
+		}
+
 		if int64(replayed) >= maxEntries {
 			remaining = append(remaining, line)
+			processing = false
 			continue
 		}
 
@@ -158,17 +171,26 @@ func (l *Log) Replay(
 
 		if err := publish(ctx, entry.Request); err != nil {
 			remaining = append(remaining, line)
-			if idx+1 < len(lines) {
-				remaining = append(remaining, lines[idx+1:]...)
-			}
-			break
+			processing = false
+			continue
 		}
 
 		replayed++
 	}
+	if err := scanner.Err(); err != nil {
+		return replayed, err
+	}
+
+	if replayed == 0 && len(remaining) == 0 {
+		return 0, nil
+	}
 
 	if err := l.rewrite(remaining); err != nil {
 		return replayed, err
+	}
+
+	if replayed > 0 {
+		l.depth.Add(-int64(replayed))
 	}
 	return replayed, nil
 }
@@ -184,4 +206,21 @@ func (l *Log) rewrite(lines []string) error {
 		return err
 	}
 	return os.Rename(tmpPath, l.path)
+}
+
+func countFileLines(path string) (int, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	count := 0
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) != "" {
+			count++
+		}
+	}
+	return count, scanner.Err()
 }

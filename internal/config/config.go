@@ -31,6 +31,7 @@ type Config struct {
 	DispatcherAckFlushInterval     time.Duration
 	DispatcherAckQueueSize         int64
 	WALDir                         string
+	WALMaxEntries                  int64
 	WALReplayBatch                 int64
 	WALReplayInterval              time.Duration
 	PublishStreams                 []string
@@ -39,6 +40,8 @@ type Config struct {
 	DLQMaxRetries                  int64
 	DLQMinIdle                     time.Duration
 	DLQScanInterval                time.Duration
+	DLQScanBatch                   int64
+	DLQStreamPolicies              map[string]StreamDLQPolicy
 	ReadinessTimeout               time.Duration
 }
 
@@ -73,6 +76,7 @@ func Load() (Config, error) {
 		DispatcherAckFlushInterval:     time.Duration(getEnvInt64("SIDECAR_DISPATCHER_ACK_FLUSH_MS", 10)) * time.Millisecond,
 		DispatcherAckQueueSize:         getEnvInt64("SIDECAR_DISPATCHER_ACK_QUEUE_SIZE", 4096),
 		WALDir:                         getEnv("SIDECAR_WAL_DIR", "/data/synapse-wal"),
+		WALMaxEntries:                  getEnvInt64("SIDECAR_WAL_MAX_ENTRIES", 0),
 		WALReplayBatch:                 getEnvInt64("SIDECAR_WAL_REPLAY_BATCH", 100),
 		WALReplayInterval:              time.Duration(getEnvInt64("SIDECAR_WAL_REPLAY_INTERVAL_MS", 2000)) * time.Millisecond,
 		PublishStreams:                 splitCSV(getEnv("SIDECAR_PUBLISH_STREAMS", "platform-events")),
@@ -81,8 +85,15 @@ func Load() (Config, error) {
 		DLQMaxRetries:                  getEnvInt64("SIDECAR_DLQ_MAX_RETRIES", 3),
 		DLQMinIdle:                     time.Duration(getEnvInt64("SIDECAR_DLQ_MIN_IDLE_MS", 30000)) * time.Millisecond,
 		DLQScanInterval:                time.Duration(getEnvInt64("SIDECAR_DLQ_SCAN_INTERVAL_MS", 5000)) * time.Millisecond,
+		DLQScanBatch:                   getEnvInt64("SIDECAR_DLQ_SCAN_BATCH", 100),
 		ReadinessTimeout:               time.Duration(getEnvInt64("SIDECAR_READINESS_TIMEOUT_MS", 1500)) * time.Millisecond,
 	}
+
+	dlqPolicies, err := ParseDLQStreamPolicies(os.Getenv("SIDECAR_DLQ_STREAM_POLICIES"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DLQStreamPolicies = dlqPolicies
 
 	if cfg.RedisURL == "" {
 		return Config{}, fmt.Errorf("SIDECAR_REDIS_URL is required")
@@ -135,6 +146,9 @@ func Load() (Config, error) {
 	if cfg.MaxStreamLen <= 0 {
 		return Config{}, fmt.Errorf("SIDECAR_MAX_STREAM_LEN must be > 0")
 	}
+	if cfg.WALMaxEntries < 0 {
+		return Config{}, fmt.Errorf("SIDECAR_WAL_MAX_ENTRIES must be >= 0")
+	}
 	if cfg.WALReplayBatch < 0 {
 		return Config{}, fmt.Errorf("SIDECAR_WAL_REPLAY_BATCH must be >= 0")
 	}
@@ -149,6 +163,9 @@ func Load() (Config, error) {
 	}
 	if cfg.DLQScanInterval < 0 {
 		return Config{}, fmt.Errorf("SIDECAR_DLQ_SCAN_INTERVAL_MS must be >= 0")
+	}
+	if cfg.DLQScanBatch <= 0 {
+		return Config{}, fmt.Errorf("SIDECAR_DLQ_SCAN_BATCH must be > 0")
 	}
 
 	return cfg, nil
