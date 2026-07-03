@@ -121,6 +121,65 @@ func TestReplaySuccessDrainsWAL(t *testing.T) {
 	}
 }
 
+func TestAppendRespectsMaxEntries(t *testing.T) {
+	t.Parallel()
+
+	logDir := t.TempDir()
+	w, err := New(logDir, Options{MaxEntries: 2})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	req := redisstreams.PublishRequest{
+		Stream:    "platform-events",
+		EventType: "a",
+		Payload:   []byte(`{"ok":true}`),
+	}
+	for i := 0; i < 2; i++ {
+		if err := w.Append("redis down", req); err != nil {
+			t.Fatalf("Append(%d) error = %v", i, err)
+		}
+	}
+	if err := w.Append("redis down", req); !errors.Is(err, ErrWALFull) {
+		t.Fatalf("Append() error = %v, want ErrWALFull", err)
+	}
+
+	depth, err := w.Depth()
+	if err != nil {
+		t.Fatalf("Depth() error = %v", err)
+	}
+	if depth != 2 {
+		t.Fatalf("Depth() = %d, want 2", depth)
+	}
+}
+
+func TestDepthUsesIncrementalCounter(t *testing.T) {
+	t.Parallel()
+
+	logDir := t.TempDir()
+	w, err := New(logDir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	req := redisstreams.PublishRequest{
+		Stream:    "platform-events",
+		EventType: "a",
+		Payload:   []byte(`{"ok":true}`),
+	}
+	if err := w.Append("redis down", req); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	depth, err := w.Depth()
+	if err != nil {
+		t.Fatalf("Depth() error = %v", err)
+	}
+	if depth != 1 {
+		t.Fatalf("Depth() = %d, want 1", depth)
+	}
+}
+
 func TestReplayFailureRetainsEntries(t *testing.T) {
 	t.Parallel()
 

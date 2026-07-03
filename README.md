@@ -33,12 +33,15 @@ Legacy module/path names remain `synapse-sidecar` for compatibility.
 - `SIDECAR_DISPATCHER_ACK_FLUSH_MS` (default: `10`)
 - `SIDECAR_DISPATCHER_ACK_QUEUE_SIZE` (default: `4096`)
 - `SIDECAR_WAL_DIR` (default: `/data/synapse-wal`)
+- `SIDECAR_WAL_MAX_ENTRIES` (default: `0` = unlimited; rejects new WAL writes when full)
 - WAL filename defaults to `sugar-glider.wal.jsonl` and will reuse legacy `sidecar.wal.jsonl` if present.
 - `SIDECAR_WAL_REPLAY_BATCH` (default: `100`; set `0` to disable replay)
 - `SIDECAR_WAL_REPLAY_INTERVAL_MS` (default: `2000`; set `0` to disable timer loop)
 - `SIDECAR_DLQ_MAX_RETRIES` (default: `3`; set `0` to disable DLQ scanner)
 - `SIDECAR_DLQ_MIN_IDLE_MS` (default: `30000`)
 - `SIDECAR_DLQ_SCAN_INTERVAL_MS` (default: `5000`; set `0` to disable DLQ scanner loop)
+- `SIDECAR_DLQ_SCAN_BATCH` (default: `100`; pending entries scanned per DLQ page)
+- `SIDECAR_DLQ_STREAM_POLICIES` (optional per-stream overrides: `stream:max_retries:min_idle_ms[:dlq_stream]`, comma-separated)
 - `SIDECAR_READINESS_TIMEOUT_MS` (default: `1500`)
 
 ## Dispatcher timing observability
@@ -105,6 +108,13 @@ cd deepiri-sugar-glider
 go test ./...
 ```
 
+Local bench gate (Docker Redis + Sugar Glider, gRPC smoke, publish load):
+
+```bash
+cd deepiri-sugar-glider
+./scripts/run_bench_gate.sh
+```
+
 Platform integration smoke (from deepiri-platform):
 
 ```bash
@@ -137,6 +147,5 @@ The gRPC smoke command executes `cmd/grpc-smoke` and validates:
 
 ## Still to harden
 
-- WAL backpressure/retention policies
 - Per-stream retry and DLQ policy overrides
 - Extended integration test matrix across all Sugar Glider-attached services

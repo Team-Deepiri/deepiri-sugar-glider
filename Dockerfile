@@ -14,4 +14,6 @@ WORKDIR /app
 COPY --from=build /out/sidecar /app/sidecar
 EXPOSE 8081
 EXPOSE 50051
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD ["/app/sidecar", "healthcheck"]
 ENTRYPOINT ["/app/sidecar"]

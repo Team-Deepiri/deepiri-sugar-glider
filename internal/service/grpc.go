@@ -56,20 +56,19 @@ func (s *Sidecar) PublishBatch(ctx context.Context, req *synapsev1.PublishBatchR
 	}
 
 	stream := strings.TrimSpace(req.GetStream())
-	entryIDs := make([]string, 0, len(req.GetEvents()))
+	normalized := make([]redisstreams.PublishRequest, 0, len(req.GetEvents()))
 	for _, event := range req.GetEvents() {
 		if event == nil {
 			s.incrementError()
 			return nil, status.Error(codes.InvalidArgument, "batch contains nil event")
 		}
 
-		eventStream := event.GetStream()
-		if strings.TrimSpace(eventStream) == "" {
+		eventStream := strings.TrimSpace(event.GetStream())
+		if eventStream == "" {
 			eventStream = stream
 		}
 
-		s.incrementPublishAttempts()
-		entryID, queued, _, statusCode, err := s.publishInternal(ctx, redisstreams.PublishRequest{
+		publishReq, statusCode, err := s.normalizePublishRequest(redisstreams.PublishRequest{
 			Stream:    eventStream,
 			EventType: event.GetEventType(),
 			Sender:    event.GetSender(),
@@ -77,15 +76,52 @@ func (s *Sidecar) PublishBatch(ctx context.Context, req *synapsev1.PublishBatchR
 			Priority:  event.GetPriority(),
 			Payload:   json.RawMessage(event.GetPayload()),
 			TTLSec:    event.GetTtlSec(),
-		})
+		}, stream)
 		if err != nil {
 			return nil, grpcStatusFromHTTPStatus(statusCode, err.Error())
 		}
-		if queued {
-			entryIDs = append(entryIDs, "")
-			continue
+		normalized = append(normalized, publishReq)
+	}
+
+	for range normalized {
+		s.incrementPublishAttempts()
+	}
+
+	pubCtx, cancel := s.publishRedisContext(ctx)
+	defer cancel()
+
+	entryIDs, pubErr := s.publishBatchToRedis(pubCtx, normalized)
+	if pubErr != nil {
+		if len(entryIDs) > 0 {
+			s.incrementError()
+			return nil, status.Error(codes.Unavailable, pubErr.Error())
 		}
-		entryIDs = append(entryIDs, entryID)
+		if shouldSkipWALForPublishError(ctx, pubErr) {
+			s.incrementError()
+			return nil, grpcStatusFromHTTPStatus(http.StatusGatewayTimeout, pubErr.Error())
+		}
+
+		entryIDs = make([]string, 0, len(normalized))
+		for _, publishReq := range normalized {
+			entryID, queued, _, statusCode, err := s.publishInternal(ctx, publishReq)
+			if err != nil {
+				return nil, grpcStatusFromHTTPStatus(statusCode, err.Error())
+			}
+			if queued {
+				entryIDs = append(entryIDs, "")
+				continue
+			}
+			entryIDs = append(entryIDs, entryID)
+		}
+		return &synapsev1.PublishBatchResponse{EntryIds: entryIDs}, nil
+	}
+
+	for range normalized {
+		s.incrementPublishSuccess()
+	}
+	if s.cfg.WALReplayMode == config.WALReplayModeSyncOnSuccess {
+		s.incrementWALReplaySyncCall()
+		s.replayWAL(ctx)
 	}
 
 	return &synapsev1.PublishBatchResponse{EntryIds: entryIDs}, nil
