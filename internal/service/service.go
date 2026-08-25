@@ -133,28 +133,13 @@ func New(cfg config.Config) (*Sidecar, error) {
 		collector:             metrics.New(),
 	}
 	if cfg.PublishPipelineEnabled {
-		maxBatch, err := intFromInt64("publish_pipeline_max_batch", cfg.PublishPipelineMaxBatch)
-		if err != nil {
-			_ = client.Close()
-			return nil, err
-		}
-		maxBytes, err := intFromInt64("publish_pipeline_max_bytes", cfg.PublishPipelineMaxBytes)
-		if err != nil {
-			_ = client.Close()
-			return nil, err
-		}
-		queueSize, err := intFromInt64("publish_pipeline_queue_size", cfg.PublishPipelineQueueSize)
-		if err != nil {
-			_ = client.Close()
-			return nil, err
-		}
 		sidecar.publishPipeline = newPublishPipeline(sidecar, publishPipelineConfig{
 			redis:         client.Raw(),
 			maxStreamLen:  cfg.MaxStreamLen,
-			maxBatch:      maxBatch,
-			maxBytes:      maxBytes,
+			maxBatch:      cfg.PublishPipelineMaxBatch,
+			maxBytes:      cfg.PublishPipelineMaxBytes,
 			flushInterval: cfg.PublishPipelineFlushInterval,
-			queueSize:     queueSize,
+			queueSize:     cfg.PublishPipelineQueueSize,
 		})
 	}
 	if cfg.ConsumeMode == config.ConsumeModeDispatcher {

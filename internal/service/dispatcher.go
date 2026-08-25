@@ -166,9 +166,9 @@ type streamDispatcher struct {
 	readCount     int64
 	blockDuration time.Duration
 
-	subscriberBuffer    int
-	ackBatchSize        int
-	ackFlushConcurrency int
+	subscriberBuffer    int64
+	ackBatchSize        int64
+	ackFlushConcurrency int64
 	ackFlushInterval    time.Duration
 	ackQueue            chan []string
 
@@ -193,22 +193,6 @@ func newStreamDispatcher(
 	ctx, cancel := context.WithCancel(context.Background())
 	cfg := manager.sidecar.cfg
 
-	subscriberBuffer, err := intFromInt64("dispatcher_subscriber_buffer", cfg.DispatcherSubscriberBuffer)
-	if err != nil {
-		slog.Error("invalid dispatcher subscriber buffer; using default", "error", err)
-		subscriberBuffer = 256
-	}
-	ackBatchSize, err := intFromInt64("dispatcher_ack_batch_size", cfg.DispatcherAckBatchSize)
-	if err != nil {
-		slog.Error("invalid dispatcher ack batch size; using default", "error", err)
-		ackBatchSize = 64
-	}
-	ackFlushConcurrency, err := intFromInt64("dispatcher_ack_flush_concurrency", cfg.DispatcherAckFlushConcurrency)
-	if err != nil {
-		slog.Error("invalid dispatcher ack flush concurrency; using default", "error", err)
-		ackFlushConcurrency = 2
-	}
-
 	return &streamDispatcher{
 		manager:             manager,
 		sidecar:             manager.sidecar,
@@ -218,9 +202,9 @@ func newStreamDispatcher(
 		consumerName:        cfg.DispatcherConsumerName,
 		readCount:           readCount,
 		blockDuration:       time.Duration(blockMS) * time.Millisecond,
-		subscriberBuffer:    subscriberBuffer,
-		ackBatchSize:        ackBatchSize,
-		ackFlushConcurrency: ackFlushConcurrency,
+		subscriberBuffer:    cfg.DispatcherSubscriberBuffer,
+		ackBatchSize:        cfg.DispatcherAckBatchSize,
+		ackFlushConcurrency: cfg.DispatcherAckFlushConcurrency,
 		ackFlushInterval:    cfg.DispatcherAckFlushInterval,
 		ackQueue:            make(chan []string, cfg.DispatcherAckQueueSize),
 		ctx:                 ctx,
@@ -434,7 +418,7 @@ func (d *streamDispatcher) runAckLoop() {
 		chunks := chunkStringSlice(entryIDs, d.ackBatchSize)
 		chunkCount = len(chunks)
 		contiguousSpans, contiguousSavedEntries := countContiguousAckSpans(entryIDs)
-		batchChunks := d.ackFlushConcurrency
+		batchChunks := clampInt64ToInt(d.ackFlushConcurrency)
 		if batchChunks <= 0 {
 			batchChunks = 1
 		}
@@ -479,7 +463,7 @@ func (d *streamDispatcher) runAckLoop() {
 		case entryIDs := <-d.ackQueue:
 			addPending(entryIDs)
 			drainQueue()
-			if len(pending) >= d.ackBatchSize {
+			if int64(len(pending)) >= d.ackBatchSize {
 				flush()
 			}
 		case <-ticker.C:
@@ -490,7 +474,7 @@ func (d *streamDispatcher) runAckLoop() {
 }
 
 func (d *streamDispatcher) subscribersBackpressured() bool {
-	threshold := int(float64(d.subscriberBuffer) * dispatcherBackpressureThreshold)
+	threshold := clampInt64ToInt(int64(float64(d.subscriberBuffer) * dispatcherBackpressureThreshold))
 	if threshold <= 0 {
 		threshold = 1
 	}
@@ -686,8 +670,8 @@ func dispatcherKey(streamName string, consumerGroup string) string {
 	return fmt.Sprintf("%s|%s", streamName, consumerGroup)
 }
 
-func chunkStringSlice(items []string, chunkSize int) [][]string {
-	safeChunkSize := chunkSize
+func chunkStringSlice(items []string, chunkSize int64) [][]string {
+	safeChunkSize := clampInt64ToInt(chunkSize)
 	if safeChunkSize <= 0 {
 		safeChunkSize = 1
 	}

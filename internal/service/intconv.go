@@ -1,16 +1,15 @@
 package service
 
-import (
-	"fmt"
-	"math"
-)
+import "math"
 
-func intFromInt64(name string, value int64) (int, error) {
-	if value < 0 {
-		return 0, fmt.Errorf("%s must be >= 0", name)
+// clampInt64ToInt converts value to int after clamping into the int domain.
+// The MinInt/MaxInt guards are required so CodeQL treats the cast as safe.
+func clampInt64ToInt(value int64) int {
+	if value > math.MaxInt {
+		return math.MaxInt
 	}
-	if value > int64(math.MaxInt) {
-		return 0, fmt.Errorf("%s exceeds platform int max (%d)", name, value)
+	if value < math.MinInt {
+		return math.MinInt
 	}
-	return int(value), nil
+	return int(value)
 }
