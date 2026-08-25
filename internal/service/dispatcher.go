@@ -49,6 +49,16 @@ func (m *consumeDispatcherManager) Count() int {
 	return len(m.dispatchers)
 }
 
+func (m *consumeDispatcherManager) SubscriberCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total := 0
+	for _, dispatcher := range m.dispatchers {
+		total += dispatcher.subscriberCount()
+	}
+	return total
+}
+
 func (m *consumeDispatcherManager) Close() {
 	m.mu.Lock()
 	if m.closed {

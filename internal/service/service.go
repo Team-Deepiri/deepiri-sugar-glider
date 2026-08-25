@@ -95,6 +95,7 @@ type metricsSnapshot struct {
 	WALReplayed                   uint64 `json:"wal_replayed"`
 	WALReplaySyncCalls            uint64 `json:"wal_replay_sync_calls"`
 	DLQMoved                      uint64 `json:"dlq_moved"`
+	DLQReplayed                   uint64 `json:"dlq_replayed"`
 	DispatcherDroppedSubscribers  uint64 `json:"dispatcher_dropped_subscribers"`
 	Errors                        uint64 `json:"errors"`
 }
@@ -116,7 +117,7 @@ func New(cfg config.Config) (*Sidecar, error) {
 		return nil, fmt.Errorf("redis client: %w", err)
 	}
 
-	w, err := wal.New(cfg.WALDir, wal.Options{MaxEntries: cfg.WALMaxEntries})
+	w, err := wal.New(cfg.WALDir, wal.Options{MaxEntries: cfg.WALMaxEntries, MaxBytes: cfg.WALMaxBytes})
 	if err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("wal init: %w", err)
@@ -199,6 +200,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	mux.HandleFunc("/v1/publish", s.publish)
 	mux.HandleFunc("/v1/read", s.readFromStream)
 	mux.HandleFunc("/v1/ack", s.ackEntries)
+	mux.HandleFunc("/v1/dlq/replay", s.replayDLQHTTP)
 	mux.HandleFunc("/v1/config", s.currentConfig)
 
 	httpServer := &http.Server{
@@ -482,19 +484,51 @@ func (s *Sidecar) healthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Sidecar) readyz(w http.ResponseWriter, _ *http.Request) {
-	err := health.CheckReady(s.cfg.ReadinessTimeout, s.redis.Ping)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"ready":        false,
-			"redis_status": "down",
-		})
-		return
+	payload := s.readinessSnapshot()
+	statusCode := http.StatusOK
+	if !payload["ready"].(bool) {
+		statusCode = http.StatusServiceUnavailable
+	}
+	writeJSON(w, statusCode, payload)
+}
+
+func (s *Sidecar) readinessSnapshot() map[string]any {
+	reasons := make([]string, 0, 4)
+	redisStatus := "ok"
+	if err := health.CheckReady(s.cfg.ReadinessTimeout, s.redis.Ping); err != nil {
+		redisStatus = "down"
+		reasons = append(reasons, "redis_unavailable")
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ready":        true,
-		"redis_status": "ok",
-	})
+	walDepth, _ := s.wal.Depth()
+	walBytes, _ := s.wal.Bytes()
+	publishQueueDepth := s.publishPipelineQueueDepth()
+	activeDispatchers := 0
+	activeSubscribers := 0
+	if s.dispatcherManager != nil {
+		activeDispatchers = s.dispatcherManager.Count()
+		activeSubscribers = s.dispatcherManager.SubscriberCount()
+	}
+
+	if s.cfg.ReadyMaxWALDepth > 0 && int64(walDepth) >= s.cfg.ReadyMaxWALDepth {
+		reasons = append(reasons, "wal_depth_exceeded")
+	}
+	if s.cfg.ReadyMaxPublishQueueDepth > 0 && publishQueueDepth >= s.cfg.ReadyMaxPublishQueueDepth {
+		reasons = append(reasons, "publish_pipeline_queue_depth_exceeded")
+	}
+
+	return map[string]any{
+		"ready":                       len(reasons) == 0,
+		"redis_status":                redisStatus,
+		"wal_depth":                   walDepth,
+		"wal_bytes":                   walBytes,
+		"wal_max_entries":             s.cfg.WALMaxEntries,
+		"wal_max_bytes":               s.cfg.WALMaxBytes,
+		"publish_pipeline_queue_depth": publishQueueDepth,
+		"dispatcher_active":           activeDispatchers,
+		"dispatcher_subscribers":      activeSubscribers,
+		"reasons":                     reasons,
+	}
 }
 
 func (s *Sidecar) metrics(w http.ResponseWriter, r *http.Request) {
@@ -560,7 +594,7 @@ func (s *Sidecar) publishInternal(
 		slog.Warn("publish failed, writing WAL", "error", pubErr, "stream", req.Stream)
 		if appendErr := s.wal.Append(pubErr.Error(), req); appendErr != nil {
 			s.incrementError()
-			if errors.Is(appendErr, wal.ErrWALFull) {
+			if errors.Is(appendErr, wal.ErrWALFull) || errors.Is(appendErr, wal.ErrWALDiskFull) {
 				return "", false, 0, http.StatusServiceUnavailable, errors.New("redis unavailable and wal is full")
 			}
 			return "", false, 0, http.StatusServiceUnavailable, errors.New("redis unavailable and wal append failed")
@@ -740,7 +774,10 @@ func (s *Sidecar) currentConfig(w http.ResponseWriter, _ *http.Request) {
 		"dlq_stream_policies":               s.cfg.DLQStreamPolicies,
 		"wal_path":                          s.wal.Path(),
 		"wal_max_entries":                   s.cfg.WALMaxEntries,
+		"wal_max_bytes":                     s.cfg.WALMaxBytes,
 		"wal_depth":                         depth,
+		"ready_max_wal_depth":               s.cfg.ReadyMaxWALDepth,
+		"ready_max_publish_queue_depth":     s.cfg.ReadyMaxPublishQueueDepth,
 		"metrics":                           s.getMetricsSnapshot(),
 	})
 }
@@ -765,6 +802,7 @@ func (s *Sidecar) incrementGroupEnsureAttempt()            { s.collector.IncGrou
 func (s *Sidecar) incrementWALReplayed(n uint64)           { s.collector.IncWALReplayed(n) }
 func (s *Sidecar) incrementWALReplaySyncCall()             { s.collector.IncWALReplaySyncCall() }
 func (s *Sidecar) incrementDLQMoved()                      { s.collector.IncDLQMoved() }
+func (s *Sidecar) incrementDLQReplayed(n uint64)           { s.collector.IncDLQReplayed(n) }
 func (s *Sidecar) incrementDispatcherDroppedSubscribers()  { s.collector.IncDispatcherDroppedSubscribers() }
 func (s *Sidecar) observeDispatcherReadDuration(duration time.Duration) {
 	s.collector.ObserveDispatcherReadDuration(duration)
@@ -834,6 +872,7 @@ func (s *Sidecar) getMetricsSnapshot() metricsSnapshot {
 		WALReplayed:                   snapshot.WALReplayed,
 		WALReplaySyncCalls:            snapshot.WALReplaySyncCalls,
 		DLQMoved:                      snapshot.DLQMoved,
+		DLQReplayed:                   snapshot.DLQReplayed,
 		DispatcherDroppedSubscribers:  snapshot.DispatcherDroppedSubscribers,
 		Errors:                        snapshot.Errors,
 	}

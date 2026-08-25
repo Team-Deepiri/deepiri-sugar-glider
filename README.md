@@ -5,44 +5,61 @@ Legacy module/path names remain `synapse-sidecar` for compatibility.
 
 ## Current capabilities
 
-- Env-driven Sugar Glider config (`SIDECAR_*` legacy variable namespace)
+- Env-driven Sugar Glider config (`SUGAR_GLIDER_*` preferred, `SIDECAR_*` legacy aliases)
 - Redis Streams publish/consume/ack support
 - gRPC server from `proto/synapse/v1/sidecar.proto` (legacy proto path)
-- HTTP compatibility endpoints (`/v1/publish`, `/v1/read`, `/v1/ack`) for incremental migration
+- HTTP compatibility endpoints (`/v1/publish`, `/v1/read`, `/v1/ack`, `/v1/dlq/replay`) for incremental migration
 - `/healthz`, `/readyz`, and `/metrics` HTTP endpoints
 - `healthcheck` CLI command for container probes (`/app/sidecar healthcheck`, legacy binary name)
-- Local WAL append + replay when Redis is unavailable
+- Local WAL append + replay when Redis is unavailable (entry count and optional byte caps)
 - Background DLQ scanner for over-retried pending entries
+- DLQ replay (HTTP + gRPC) to requeue entries onto target streams
+- Dual Prometheus metric prefixes: `synapse_sidecar_*` and `sugar_glider_*`
 
 ## Runtime configuration
 
-- `SIDECAR_SERVICE_NAME` (default: `real-time-gateway`)
-- `SIDECAR_REDIS_URL` (required)
-- `SIDECAR_LISTEN_ADDR` (default: `tcp://0.0.0.0:8081`; HTTP probe/compat server)
-- `SIDECAR_GRPC_ADDR` (default: `tcp://0.0.0.0:50051`; gRPC server)
-- `SIDECAR_PUBLISH_STREAMS` (default: `platform-events`)
-- `SIDECAR_CONSUME_STREAMS` (default: empty = allow all streams)
-- `SIDECAR_MAX_STREAM_LEN` (default: `10000`)
+Preferred keys use the `SUGAR_GLIDER_*` prefix. Matching `SIDECAR_*` keys remain supported aliases.
+
+- `SUGAR_GLIDER_SERVICE_NAME` / `SIDECAR_SERVICE_NAME` (default: `real-time-gateway`)
+- `SUGAR_GLIDER_REDIS_URL` / `SIDECAR_REDIS_URL` (required)
+- `SUGAR_GLIDER_LISTEN_ADDR` / `SIDECAR_LISTEN_ADDR` (default: `tcp://0.0.0.0:8081`; HTTP probe/compat server)
+- `SUGAR_GLIDER_GRPC_ADDR` / `SIDECAR_GRPC_ADDR` (default: `tcp://0.0.0.0:50051`; gRPC server)
+- `SUGAR_GLIDER_PUBLISH_STREAMS` / `SIDECAR_PUBLISH_STREAMS` (default: `platform-events`)
+- `SUGAR_GLIDER_CONSUME_STREAMS` / `SIDECAR_CONSUME_STREAMS` (default: empty = allow all streams)
+- `SUGAR_GLIDER_MAX_STREAM_LEN` / `SIDECAR_MAX_STREAM_LEN` (default: `10000`)
 - Dispatcher consume tuning:
-- `SIDECAR_DISPATCHER_CONSUMER_NAME` (default: `sugar-glider-dispatcher`)
-- `SIDECAR_DISPATCHER_READ_COUNT` (default: `100`)
-- `SIDECAR_DISPATCHER_BLOCK_MS` (default: `1000`)
-- `SIDECAR_DISPATCHER_SUBSCRIBER_BUFFER` (default: `256`)
-- `SIDECAR_DISPATCHER_ACK_BATCH_SIZE` (default: `64`)
-- `SIDECAR_DISPATCHER_ACK_FLUSH_CONCURRENCY` (default: `2`)
-- `SIDECAR_DISPATCHER_ACK_FLUSH_MS` (default: `10`)
-- `SIDECAR_DISPATCHER_ACK_QUEUE_SIZE` (default: `4096`)
-- `SIDECAR_WAL_DIR` (default: `/data/synapse-wal`)
-- `SIDECAR_WAL_MAX_ENTRIES` (default: `0` = unlimited; rejects new WAL writes when full)
+- `SUGAR_GLIDER_DISPATCHER_CONSUMER_NAME` / `SIDECAR_DISPATCHER_CONSUMER_NAME` (default: `sugar-glider-dispatcher`)
+- `SUGAR_GLIDER_DISPATCHER_READ_COUNT` / `SIDECAR_DISPATCHER_READ_COUNT` (default: `100`)
+- `SUGAR_GLIDER_DISPATCHER_BLOCK_MS` / `SIDECAR_DISPATCHER_BLOCK_MS` (default: `1000`)
+- `SUGAR_GLIDER_DISPATCHER_SUBSCRIBER_BUFFER` / `SIDECAR_DISPATCHER_SUBSCRIBER_BUFFER` (default: `256`)
+- `SUGAR_GLIDER_DISPATCHER_ACK_BATCH_SIZE` / `SIDECAR_DISPATCHER_ACK_BATCH_SIZE` (default: `64`)
+- `SUGAR_GLIDER_DISPATCHER_ACK_FLUSH_CONCURRENCY` / `SIDECAR_DISPATCHER_ACK_FLUSH_CONCURRENCY` (default: `2`)
+- `SUGAR_GLIDER_DISPATCHER_ACK_FLUSH_MS` / `SIDECAR_DISPATCHER_ACK_FLUSH_MS` (default: `10`)
+- `SUGAR_GLIDER_DISPATCHER_ACK_QUEUE_SIZE` / `SIDECAR_DISPATCHER_ACK_QUEUE_SIZE` (default: `4096`)
+- `SUGAR_GLIDER_WAL_DIR` / `SIDECAR_WAL_DIR` (default: `/data/synapse-wal`)
+- `SUGAR_GLIDER_WAL_MAX_ENTRIES` / `SIDECAR_WAL_MAX_ENTRIES` (default: `0` = unlimited; rejects new WAL writes when full)
+- `SUGAR_GLIDER_WAL_MAX_BYTES` / `SIDECAR_WAL_MAX_BYTES` (default: `0` = unlimited disk bytes)
 - WAL filename defaults to `sugar-glider.wal.jsonl` and will reuse legacy `sidecar.wal.jsonl` if present.
-- `SIDECAR_WAL_REPLAY_BATCH` (default: `100`; set `0` to disable replay)
-- `SIDECAR_WAL_REPLAY_INTERVAL_MS` (default: `2000`; set `0` to disable timer loop)
-- `SIDECAR_DLQ_MAX_RETRIES` (default: `3`; set `0` to disable DLQ scanner)
-- `SIDECAR_DLQ_MIN_IDLE_MS` (default: `30000`)
-- `SIDECAR_DLQ_SCAN_INTERVAL_MS` (default: `5000`; set `0` to disable DLQ scanner loop)
-- `SIDECAR_DLQ_SCAN_BATCH` (default: `100`; pending entries scanned per DLQ page)
-- `SIDECAR_DLQ_STREAM_POLICIES` (optional per-stream overrides: `stream:max_retries:min_idle_ms[:dlq_stream]`, comma-separated)
-- `SIDECAR_READINESS_TIMEOUT_MS` (default: `1500`)
+- `SUGAR_GLIDER_WAL_REPLAY_BATCH` / `SIDECAR_WAL_REPLAY_BATCH` (default: `100`; set `0` to disable replay)
+- `SUGAR_GLIDER_WAL_REPLAY_INTERVAL_MS` / `SIDECAR_WAL_REPLAY_INTERVAL_MS` (default: `2000`; set `0` to disable timer loop)
+- `SUGAR_GLIDER_DLQ_MAX_RETRIES` / `SIDECAR_DLQ_MAX_RETRIES` (default: `3`; set `0` to disable DLQ scanner)
+- `SUGAR_GLIDER_DLQ_MIN_IDLE_MS` / `SIDECAR_DLQ_MIN_IDLE_MS` (default: `30000`)
+- `SUGAR_GLIDER_DLQ_SCAN_INTERVAL_MS` / `SIDECAR_DLQ_SCAN_INTERVAL_MS` (default: `5000`; set `0` to disable DLQ scanner loop)
+- `SUGAR_GLIDER_DLQ_SCAN_BATCH` / `SIDECAR_DLQ_SCAN_BATCH` (default: `100`; pending entries scanned per DLQ page)
+- `SUGAR_GLIDER_DLQ_STREAM_POLICIES` / `SIDECAR_DLQ_STREAM_POLICIES` (optional per-stream overrides: `stream:max_retries:min_idle_ms[:dlq_stream]`, comma-separated)
+- `SUGAR_GLIDER_READINESS_TIMEOUT_MS` / `SIDECAR_READINESS_TIMEOUT_MS` (default: `1500`)
+- `SUGAR_GLIDER_READY_MAX_WAL_DEPTH` / `SIDECAR_READY_MAX_WAL_DEPTH` (default: `0` = report only; when >0 marks not-ready)
+- `SUGAR_GLIDER_READY_MAX_PUBLISH_QUEUE_DEPTH` / `SIDECAR_READY_MAX_PUBLISH_QUEUE_DEPTH` (default: `0` = report only)
+
+### DLQ replay
+
+```bash
+curl -sS -X POST http://localhost:8081/v1/dlq/replay \
+  -H 'content-type: application/json' \
+  -d '{"dlq_stream":"platform-events:dlq","count":100,"delete_from_dlq":true}'
+```
+
+gRPC equivalent: `SynapseSidecar/ReplayDLQ`.
 
 ## Dispatcher timing observability
 
@@ -73,7 +90,7 @@ Key fields:
 - `dispatcher_ack_contiguous_spans`
 - `dispatcher_ack_contiguous_saved_entries`
 
-Prometheus names use the `synapse_sidecar_dispatcher_*` prefix.
+Prometheus names use both `synapse_sidecar_dispatcher_*` (legacy) and `sugar_glider_dispatcher_*` aliases.
 
 The ACK compression counters are measurement-only. Redis `XACK` still receives explicit entry IDs; these fields quantify duplicate IDs removed by the pending map and contiguous stream-ID spans that could justify a future range-style/lower-ACK-pressure experiment.
 
@@ -147,5 +164,6 @@ The gRPC smoke command executes `cmd/grpc-smoke` and validates:
 
 ## Still to harden
 
-- Per-stream retry and DLQ policy overrides
+- Grafana dashboards for dual metric namespaces
 - Extended integration test matrix across all Sugar Glider-attached services
+- Production ACL for DLQ replay admin endpoints

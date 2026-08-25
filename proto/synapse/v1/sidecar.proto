@@ -11,6 +11,8 @@ service SynapseSidecar {
   rpc Ack(AckRequest) returns (AckResponse);
   rpc StreamInfo(StreamInfoRequest) returns (StreamInfoResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
+  // ReplayDLQ requeues entries from a DLQ stream back onto a target stream.
+  rpc ReplayDLQ(ReplayDLQRequest) returns (ReplayDLQResponse);
 }
 
 message PublishRequest {
@@ -25,6 +27,8 @@ message PublishRequest {
 
 message PublishResponse {
   string entry_id = 1;
+  // queued is true when Redis was unavailable and the event was written to local WAL.
+  bool queued = 2;
 }
 
 message PublishBatchRequest {
@@ -78,4 +82,21 @@ message HealthRequest {}
 message HealthResponse {
   bool healthy = 1;
   string redis_status = 2;
+}
+
+message ReplayDLQRequest {
+  string dlq_stream = 1;
+  // Optional override; defaults to each entry's dlq_original_stream field.
+  string target_stream = 2;
+  int32 count = 3;
+  string start = 4;
+  string end = 5;
+  // When true, successfully requeued DLQ entries are deleted from the DLQ stream.
+  bool delete_from_dlq = 6;
+}
+
+message ReplayDLQResponse {
+  int32 replayed = 1;
+  int32 skipped = 2;
+  repeated string entry_ids = 3;
 }
