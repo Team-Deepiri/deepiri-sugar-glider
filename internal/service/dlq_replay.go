@@ -33,6 +33,7 @@ func (s *Sidecar) replayDLQHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	defer r.Body.Close()
 
 	var req dlqReplayRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

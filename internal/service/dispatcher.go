@@ -193,6 +193,22 @@ func newStreamDispatcher(
 	ctx, cancel := context.WithCancel(context.Background())
 	cfg := manager.sidecar.cfg
 
+	subscriberBuffer, err := intFromInt64("dispatcher_subscriber_buffer", cfg.DispatcherSubscriberBuffer)
+	if err != nil {
+		slog.Error("invalid dispatcher subscriber buffer; using default", "error", err)
+		subscriberBuffer = 256
+	}
+	ackBatchSize, err := intFromInt64("dispatcher_ack_batch_size", cfg.DispatcherAckBatchSize)
+	if err != nil {
+		slog.Error("invalid dispatcher ack batch size; using default", "error", err)
+		ackBatchSize = 64
+	}
+	ackFlushConcurrency, err := intFromInt64("dispatcher_ack_flush_concurrency", cfg.DispatcherAckFlushConcurrency)
+	if err != nil {
+		slog.Error("invalid dispatcher ack flush concurrency; using default", "error", err)
+		ackFlushConcurrency = 2
+	}
+
 	return &streamDispatcher{
 		manager:             manager,
 		sidecar:             manager.sidecar,
@@ -202,9 +218,9 @@ func newStreamDispatcher(
 		consumerName:        cfg.DispatcherConsumerName,
 		readCount:           readCount,
 		blockDuration:       time.Duration(blockMS) * time.Millisecond,
-		subscriberBuffer:    int(cfg.DispatcherSubscriberBuffer),
-		ackBatchSize:        int(cfg.DispatcherAckBatchSize),
-		ackFlushConcurrency: int(cfg.DispatcherAckFlushConcurrency),
+		subscriberBuffer:    subscriberBuffer,
+		ackBatchSize:        ackBatchSize,
+		ackFlushConcurrency: ackFlushConcurrency,
 		ackFlushInterval:    cfg.DispatcherAckFlushInterval,
 		ackQueue:            make(chan []string, cfg.DispatcherAckQueueSize),
 		ctx:                 ctx,
