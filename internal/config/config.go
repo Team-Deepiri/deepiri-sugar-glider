@@ -56,7 +56,7 @@ const (
 func Load() (Config, error) {
 	cfg := Config{
 		ServiceName:                    getEnvDual("SUGAR_GLIDER_SERVICE_NAME", "SIDECAR_SERVICE_NAME", "real-time-gateway"),
-		RedisURL:                       firstNonEmptyEnv("SUGAR_GLIDER_REDIS_URL", "SIDECAR_REDIS_URL"),
+		RedisURL:                       getEnvDual("SUGAR_GLIDER_REDIS_URL", "SIDECAR_REDIS_URL", ""),
 		ListenAddr:                     getEnvDual("SUGAR_GLIDER_LISTEN_ADDR", "SIDECAR_LISTEN_ADDR", "tcp://0.0.0.0:8081"),
 		GRPCListenAddr:                 getEnvDual("SUGAR_GLIDER_GRPC_ADDR", "SIDECAR_GRPC_ADDR", "tcp://0.0.0.0:50051"),
 		PublishPipelineEnabled:         getEnvBoolDual("SUGAR_GLIDER_PUBLISH_PIPELINE_ENABLED", "SIDECAR_PUBLISH_PIPELINE_ENABLED", false),
@@ -93,7 +93,7 @@ func Load() (Config, error) {
 		ReadyMaxPublishQueueDepth:      getEnvInt64Dual("SUGAR_GLIDER_READY_MAX_PUBLISH_QUEUE_DEPTH", "SIDECAR_READY_MAX_PUBLISH_QUEUE_DEPTH", 0),
 	}
 
-	dlqPolicies, err := ParseDLQStreamPolicies(firstNonEmptyEnv("SUGAR_GLIDER_DLQ_STREAM_POLICIES", "SIDECAR_DLQ_STREAM_POLICIES"))
+	dlqPolicies, err := ParseDLQStreamPolicies(getEnvDual("SUGAR_GLIDER_DLQ_STREAM_POLICIES", "SIDECAR_DLQ_STREAM_POLICIES", ""))
 	if err != nil {
 		return Config{}, err
 	}

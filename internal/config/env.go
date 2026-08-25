@@ -52,12 +52,3 @@ func getEnvBoolDual(sugarKey, sidecarKey string, fallback bool) bool {
 	}
 	return fallback
 }
-
-func firstNonEmptyEnv(keys ...string) string {
-	for _, key := range keys {
-		if val := os.Getenv(key); val != "" {
-			return val
-		}
-	}
-	return ""
-}
