@@ -16,7 +16,10 @@ import (
 	"github.com/Team-Deepiri/deepiri-sugar-glider/internal/redisstreams"
 )
 
-var ErrWALFull = errors.New("wal entry limit reached")
+var (
+	ErrWALFull     = errors.New("wal entry limit reached")
+	ErrWALDiskFull = errors.New("wal disk byte limit reached")
+)
 
 type Entry struct {
 	Time    string                      `json:"time"`
@@ -29,6 +32,7 @@ type Log struct {
 	mu         sync.Mutex
 	depth      atomic.Int64
 	maxEntries int64
+	maxBytes   int64
 }
 
 const (
@@ -38,6 +42,7 @@ const (
 
 type Options struct {
 	MaxEntries int64
+	MaxBytes   int64
 }
 
 func New(dir string, opts ...Options) (*Log, error) {
@@ -52,6 +57,7 @@ func New(dir string, opts ...Options) (*Log, error) {
 	log := &Log{path: path}
 	if len(opts) > 0 {
 		log.maxEntries = opts[0].MaxEntries
+		log.maxBytes = opts[0].MaxBytes
 	}
 
 	depth, err := countFileLines(path)
@@ -89,18 +95,34 @@ func (l *Log) Append(reason string, req redisstreams.PublishRequest) error {
 		return ErrWALFull
 	}
 
+	payload, err := json.Marshal(Entry{
+		Time:    time.Now().UTC().Format(time.RFC3339Nano),
+		Reason:  reason,
+		Request: req,
+	})
+	if err != nil {
+		return err
+	}
+	// json.Encoder Encode adds a trailing newline; mirror that for line-oriented replay.
+	line := append(payload, '\n')
+
+	if l.maxBytes > 0 {
+		size, sizeErr := l.fileSizeLocked()
+		if sizeErr != nil {
+			return sizeErr
+		}
+		if size+int64(len(line)) > l.maxBytes {
+			return ErrWALDiskFull
+		}
+	}
+
 	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	enc := json.NewEncoder(f)
-	if err := enc.Encode(Entry{
-		Time:    time.Now().UTC().Format(time.RFC3339Nano),
-		Reason:  reason,
-		Request: req,
-	}); err != nil {
+	if _, err := f.Write(line); err != nil {
 		return err
 	}
 
@@ -112,8 +134,25 @@ func (l *Log) Depth() (int, error) {
 	return int(l.depth.Load()), nil
 }
 
+func (l *Log) Bytes() (int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fileSizeLocked()
+}
+
 func (l *Log) Path() string {
 	return l.path
+}
+
+func (l *Log) fileSizeLocked() (int64, error) {
+	info, err := os.Stat(l.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
 // Replay drains up to maxEntries from WAL in-order by invoking publish for each entry.

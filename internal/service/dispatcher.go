@@ -49,6 +49,16 @@ func (m *consumeDispatcherManager) Count() int {
 	return len(m.dispatchers)
 }
 
+func (m *consumeDispatcherManager) SubscriberCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total := 0
+	for _, dispatcher := range m.dispatchers {
+		total += dispatcher.subscriberCount()
+	}
+	return total
+}
+
 func (m *consumeDispatcherManager) Close() {
 	m.mu.Lock()
 	if m.closed {
@@ -156,9 +166,9 @@ type streamDispatcher struct {
 	readCount     int64
 	blockDuration time.Duration
 
-	subscriberBuffer    int
-	ackBatchSize        int
-	ackFlushConcurrency int
+	subscriberBuffer    int64
+	ackBatchSize        int64
+	ackFlushConcurrency int64
 	ackFlushInterval    time.Duration
 	ackQueue            chan []string
 
@@ -192,9 +202,9 @@ func newStreamDispatcher(
 		consumerName:        cfg.DispatcherConsumerName,
 		readCount:           readCount,
 		blockDuration:       time.Duration(blockMS) * time.Millisecond,
-		subscriberBuffer:    int(cfg.DispatcherSubscriberBuffer),
-		ackBatchSize:        int(cfg.DispatcherAckBatchSize),
-		ackFlushConcurrency: int(cfg.DispatcherAckFlushConcurrency),
+		subscriberBuffer:    cfg.DispatcherSubscriberBuffer,
+		ackBatchSize:        cfg.DispatcherAckBatchSize,
+		ackFlushConcurrency: cfg.DispatcherAckFlushConcurrency,
 		ackFlushInterval:    cfg.DispatcherAckFlushInterval,
 		ackQueue:            make(chan []string, cfg.DispatcherAckQueueSize),
 		ctx:                 ctx,
@@ -408,7 +418,7 @@ func (d *streamDispatcher) runAckLoop() {
 		chunks := chunkStringSlice(entryIDs, d.ackBatchSize)
 		chunkCount = len(chunks)
 		contiguousSpans, contiguousSavedEntries := countContiguousAckSpans(entryIDs)
-		batchChunks := d.ackFlushConcurrency
+		batchChunks := clampInt64ToInt(d.ackFlushConcurrency)
 		if batchChunks <= 0 {
 			batchChunks = 1
 		}
@@ -453,7 +463,7 @@ func (d *streamDispatcher) runAckLoop() {
 		case entryIDs := <-d.ackQueue:
 			addPending(entryIDs)
 			drainQueue()
-			if len(pending) >= d.ackBatchSize {
+			if int64(len(pending)) >= d.ackBatchSize {
 				flush()
 			}
 		case <-ticker.C:
@@ -464,7 +474,7 @@ func (d *streamDispatcher) runAckLoop() {
 }
 
 func (d *streamDispatcher) subscribersBackpressured() bool {
-	threshold := int(float64(d.subscriberBuffer) * dispatcherBackpressureThreshold)
+	threshold := clampInt64ToInt(int64(float64(d.subscriberBuffer) * dispatcherBackpressureThreshold))
 	if threshold <= 0 {
 		threshold = 1
 	}
@@ -660,8 +670,8 @@ func dispatcherKey(streamName string, consumerGroup string) string {
 	return fmt.Sprintf("%s|%s", streamName, consumerGroup)
 }
 
-func chunkStringSlice(items []string, chunkSize int) [][]string {
-	safeChunkSize := chunkSize
+func chunkStringSlice(items []string, chunkSize int64) [][]string {
+	safeChunkSize := clampInt64ToInt(chunkSize)
 	if safeChunkSize <= 0 {
 		safeChunkSize = 1
 	}

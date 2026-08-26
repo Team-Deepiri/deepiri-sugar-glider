@@ -38,11 +38,10 @@ func (s *Sidecar) Publish(ctx context.Context, req *synapsev1.PublishRequest) (*
 		return nil, grpcStatusFromHTTPStatus(statusCode, err.Error())
 	}
 	if queued {
-		// Proto response has no queued flag; empty entry_id indicates locally queued publish.
-		return &synapsev1.PublishResponse{EntryId: ""}, nil
+		return &synapsev1.PublishResponse{EntryId: "", Queued: true}, nil
 	}
 
-	return &synapsev1.PublishResponse{EntryId: entryID}, nil
+	return &synapsev1.PublishResponse{EntryId: entryID, Queued: false}, nil
 }
 
 func (s *Sidecar) PublishBatch(ctx context.Context, req *synapsev1.PublishBatchRequest) (*synapsev1.PublishBatchResponse, error) {
@@ -296,6 +295,31 @@ func (s *Sidecar) Health(ctx context.Context, _ *synapsev1.HealthRequest) (*syna
 	return &synapsev1.HealthResponse{
 		Healthy:     true,
 		RedisStatus: "ok",
+	}, nil
+}
+
+func (s *Sidecar) ReplayDLQ(ctx context.Context, req *synapsev1.ReplayDLQRequest) (*synapsev1.ReplayDLQResponse, error) {
+	if req == nil {
+		s.incrementError()
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	result, statusCode, err := s.replayDLQInternal(ctx, dlqReplayRequest{
+		DLQStream:     req.GetDlqStream(),
+		TargetStream:  req.GetTargetStream(),
+		Count:         int64(req.GetCount()),
+		Start:         req.GetStart(),
+		End:           req.GetEnd(),
+		DeleteFromDLQ: req.GetDeleteFromDlq(),
+	})
+	if err != nil {
+		return nil, grpcStatusFromHTTPStatus(statusCode, err.Error())
+	}
+
+	return &synapsev1.ReplayDLQResponse{
+		Replayed:  int32(result.Replayed),
+		Skipped:   int32(result.Skipped),
+		EntryIds:  result.EntryIDs,
 	}, nil
 }
 

@@ -228,3 +228,27 @@ func TestReplayFailureRetainsEntries(t *testing.T) {
 		t.Fatalf("Depth() = %d, want 2", depth)
 	}
 }
+
+func TestAppendEnforcesMaxBytes(t *testing.T) {
+	t.Parallel()
+
+	logDir := t.TempDir()
+	w, err := New(logDir, Options{MaxBytes: 400})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	req := redisstreams.PublishRequest{
+		Stream:    "platform-events",
+		EventType: "large",
+		Sender:    "test",
+		Payload:   []byte(`{"payload":"0123456789012345678901234567890123456789"}`),
+	}
+	if err := w.Append("redis down", req); err != nil {
+		t.Fatalf("first Append() error = %v", err)
+	}
+	// Second append should exceed the 400-byte cap.
+	if err := w.Append("redis down", req); !errors.Is(err, ErrWALDiskFull) {
+		t.Fatalf("second Append() error = %v, want ErrWALDiskFull", err)
+	}
+}
