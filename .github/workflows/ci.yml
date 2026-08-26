@@ -3,11 +3,19 @@ name: CI
 on:
   pull_request:
     branches: [main, dev]
-  push:
-    branches: [main, dev]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE*'
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
+    timeout-minutes: 20
     name: Test and build
     runs-on: ubuntu-latest
 
