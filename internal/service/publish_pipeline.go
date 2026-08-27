@@ -32,8 +32,8 @@ type publishPipeline struct {
 	redis        *redis.Client
 	maxStreamLen int64
 
-	maxBatch      int
-	maxBytes      int
+	maxBatch      int64
+	maxBytes      int64
 	flushInterval time.Duration
 
 	queue chan *publishJob
@@ -62,10 +62,10 @@ func newPublishPipeline(sidecar *Sidecar, cfg publishPipelineConfig) *publishPip
 type publishPipelineConfig struct {
 	redis         *redis.Client
 	maxStreamLen  int64
-	maxBatch      int
-	maxBytes      int
+	maxBatch      int64
+	maxBytes      int64
 	flushInterval time.Duration
-	queueSize     int
+	queueSize     int64
 }
 
 func (p *publishPipeline) PublishMany(ctx context.Context, reqs []redisstreams.PublishRequest) ([]publishResult, error) {
@@ -177,7 +177,7 @@ func (p *publishPipeline) run() {
 	}
 
 	buffer := make([]*publishJob, 0, p.maxBatch)
-	bufferBytes := 0
+	var bufferBytes int64
 
 	flush := func() {
 		if len(buffer) == 0 {
@@ -195,7 +195,7 @@ func (p *publishPipeline) run() {
 			select {
 			case job := <-p.queue:
 				buffer = append(buffer, job)
-				bufferBytes += job.estimatedBytes
+				bufferBytes += int64(job.estimatedBytes)
 			default:
 				return
 			}
@@ -212,9 +212,9 @@ func (p *publishPipeline) run() {
 			flush()
 		case job := <-p.queue:
 			buffer = append(buffer, job)
-			bufferBytes += job.estimatedBytes
+			bufferBytes += int64(job.estimatedBytes)
 			drain()
-			if p.flushInterval == 0 || len(buffer) >= p.maxBatch || bufferBytes >= p.maxBytes {
+			if p.flushInterval == 0 || int64(len(buffer)) >= p.maxBatch || bufferBytes >= p.maxBytes {
 				flush()
 			}
 		}

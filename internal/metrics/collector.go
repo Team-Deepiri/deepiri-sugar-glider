@@ -49,6 +49,7 @@ type Snapshot struct {
 	WALReplayed                   uint64
 	WALReplaySyncCalls            uint64
 	DLQMoved                      uint64
+	DLQReplayed                   uint64
 	DispatcherDroppedSubscribers  uint64
 	Errors                        uint64
 }
@@ -76,6 +77,7 @@ type Collector struct {
 	walReplayed                   prometheus.Counter
 	walReplaySyncCalls            prometheus.Counter
 	dlqMoved                      prometheus.Counter
+	dlqReplayed                   prometheus.Counter
 	dispatcherDroppedSubscribers  prometheus.Counter
 	errorsTotal                   prometheus.Counter
 
@@ -110,20 +112,28 @@ func New() *Collector {
 	c := &Collector{registry: registry}
 
 	newCounter := func(name, help string) prometheus.Counter {
-		counter := prometheus.NewCounter(prometheus.CounterOpts{
+		legacy := prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "synapse_sidecar_" + name,
 			Help: help,
 		})
-		registry.MustRegister(counter)
-		return counter
+		modern := prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "sugar_glider_" + name,
+			Help: help + " (sugar_glider alias)",
+		})
+		registry.MustRegister(legacy, modern)
+		return dualCounter{legacy: legacy, modern: modern}
 	}
 	newGauge := func(name, help string) prometheus.Gauge {
-		gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		legacy := prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "synapse_sidecar_" + name,
 			Help: help,
 		})
-		registry.MustRegister(gauge)
-		return gauge
+		modern := prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "sugar_glider_" + name,
+			Help: help + " (sugar_glider alias)",
+		})
+		registry.MustRegister(legacy, modern)
+		return dualGauge{legacy: legacy, modern: modern}
 	}
 
 	c.publishAttempts = newCounter("publish_attempts_total", "Total publish attempts.")
@@ -145,6 +155,7 @@ func New() *Collector {
 	c.walReplayed = newCounter("wal_replayed_total", "Total WAL entries replayed.")
 	c.walReplaySyncCalls = newCounter("wal_replay_sync_calls_total", "Total synchronous WAL replay calls from publish success path.")
 	c.dlqMoved = newCounter("dlq_moved_total", "Total entries moved to DLQ.")
+	c.dlqReplayed = newCounter("dlq_replayed_total", "Total DLQ entries requeued onto target streams.")
 	c.dispatcherDroppedSubscribers = newCounter("dispatcher_dropped_subscribers_total", "Total dispatcher subscribers dropped due to full buffers.")
 	c.errorsTotal = newCounter("errors_total", "Total sugar glider operation errors.")
 
@@ -207,6 +218,12 @@ func (c *Collector) IncGroupEnsureAttempt()            { c.groupEnsureAttempts.I
 func (c *Collector) IncWALReplayed(n uint64)           { c.walReplayed.Add(float64(n)) }
 func (c *Collector) IncWALReplaySyncCall()             { c.walReplaySyncCalls.Inc() }
 func (c *Collector) IncDLQMoved()                      { c.dlqMoved.Inc() }
+func (c *Collector) IncDLQReplayed(n uint64) {
+	if n == 0 {
+		return
+	}
+	c.dlqReplayed.Add(float64(n))
+}
 func (c *Collector) IncDispatcherDroppedSubscribers()  { c.dispatcherDroppedSubscribers.Inc() }
 func (c *Collector) IncError()                         { c.errorsTotal.Inc() }
 
@@ -305,6 +322,7 @@ func (c *Collector) Snapshot(queueDepth int64) Snapshot {
 		WALReplayed:                   counterValue(c.walReplayed),
 		WALReplaySyncCalls:            counterValue(c.walReplaySyncCalls),
 		DLQMoved:                      counterValue(c.dlqMoved),
+		DLQReplayed:                   counterValue(c.dlqReplayed),
 		DispatcherDroppedSubscribers:  counterValue(c.dispatcherDroppedSubscribers),
 		Errors:                        counterValue(c.errorsTotal),
 	}
