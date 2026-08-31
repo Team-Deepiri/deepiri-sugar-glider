@@ -23,7 +23,7 @@ This document tracks follow-up work after the transport hardening and beef-up pa
 
 1. Run the platform RTG gate after submodule bump:
    ```bash
-   cd deepiri-platform
+   cd deepiri-control-plane
    make rtg-sugar-gate
    ```
 2. Re-run the full end-to-end benchmark matrix and compare against the April baseline / v3 checkpoint.

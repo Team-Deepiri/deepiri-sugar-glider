@@ -132,24 +132,24 @@ cd deepiri-sugar-glider
 ./scripts/run_bench_gate.sh
 ```
 
-Platform integration smoke (from deepiri-platform):
+Platform integration smoke (from deepiri-control-plane):
 
 ```bash
-cd deepiri-platform
+cd deepiri-control-plane
 make rtg-sugar-grpc-smoke
 ```
 
 Fast full-chain gate:
 
 ```bash
-cd deepiri-platform
+cd deepiri-control-plane
 make rtg-sugar-gate
 ```
 
 Full chaos-inclusive gate:
 
 ```bash
-cd deepiri-platform
+cd deepiri-control-plane
 make rtg-sugar-gate-full
 ```
 
