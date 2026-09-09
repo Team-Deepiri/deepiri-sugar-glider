@@ -1,4 +1,7 @@
-# Deepiri Sugar Glider (Go)
+# Deepiri Sugar Glider 
+
+<img width="1983" height="793" alt="image" src="https://github.com/user-attachments/assets/bc1bc192-775a-454a-93ab-a7455dcb03d2" />
+
 
 This transport service (formerly Synapse Sidecar) runs next to the realtime gateway and owns Redis Streams concerns (publish, consume, ack, WAL replay, and DLQ scanning).
 Legacy module/path names remain `synapse-sidecar` for compatibility.
